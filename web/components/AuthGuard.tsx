@@ -1,8 +1,8 @@
-import { useWalletConnection } from '../lib/hooks/useWalletConnection';
+import { useWalletState } from '@/app/hooks/useWalletConnection';
 import { ReactNode } from 'react';
 
 export default function AuthGuard({ children }: { children: ReactNode }) {
-  const { isConnected } = useWalletConnection();
+  const { isConnected } = useWalletState();
 
   if (!isConnected) {
     return (

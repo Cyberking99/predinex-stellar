@@ -1,8 +1,8 @@
 import Link from 'next/link';
-import { useWalletConnection } from '../lib/hooks/useWalletConnection';
+import { useWalletState } from '@/app/hooks/useWalletConnection';
 
 export default function Navbar() {
-  const { isConnected, connect } = useWalletConnection();
+  const { isConnected, connect } = useWalletState();
 
   return (
     <nav aria-label="Main navigation" className="fixed top-0 w-full z-50 bg-background/80 backdrop-blur-md border-b border-border">

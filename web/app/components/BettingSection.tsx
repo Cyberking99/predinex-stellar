@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import { useStacks } from './StacksProvider';
-import { useWalletConnection } from '../../lib/hooks/useWalletConnection';
 import { useToast } from '../../providers/ToastProvider';
 import { openContractCall } from '@stacks/connect';
 import { uintCV } from '@stacks/transactions';
@@ -17,18 +16,18 @@ interface BettingSectionProps {
 
 export default function BettingSection({ pool, poolId }: BettingSectionProps) {
     const { userData, authenticate } = useStacks();
-    const { isConnected, address } = useWalletConnection();
     const { showToast } = useToast();
     const { contract } = getRuntimeConfig();
     const [betAmount, setBetAmount] = useState("");
     const [isBetting, setIsBetting] = useState(false);
     const [walletBalance, setWalletBalance] = useState<number | null>(null);
 
-    // Fetch wallet balance when connection changes
+    const isConnected = !!userData;
+    const address = userData?.profile?.stxAddress?.mainnet || null;
+
     useEffect(() => {
         if (isConnected) {
-            // In a real app, fetch balance from API
-            const timer = setTimeout(() => setWalletBalance(100.0), 0); // Mock balance for testing
+            const timer = setTimeout(() => setWalletBalance(100.0), 0);
             return () => clearTimeout(timer);
         } else {
             setWalletBalance(null);

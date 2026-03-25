@@ -1,8 +1,7 @@
 // Enhanced contract integration for dashboard data
 
 import { fetchCallReadOnlyFunction, cvToValue, principalCV, uintCV } from "@stacks/transactions";
-import { STACKS_MAINNET } from "@stacks/network";
-import { CONTRACT_ADDRESS, CONTRACT_NAME } from "./constants";
+import { STACKS_MAINNET, STACKS_TESTNET, type StacksNetwork } from "@stacks/network";
 import { UserBet, BetHistory, DashboardData } from "./dashboard-types";
 import { fetchAllPools, getEnhancedPool } from "./enhanced-stacks-api";
 import { 
@@ -14,14 +13,20 @@ import {
   isClaimEligible,
   calculateBetProfitLoss
 } from "./dashboard-utils";
+import { getRuntimeConfig } from "./runtime-config";
 
-const network = STACKS_MAINNET;
+function getStacksNetwork(): StacksNetwork {
+  const cfg = getRuntimeConfig();
+  return cfg.network === 'testnet' ? STACKS_TESTNET : STACKS_MAINNET;
+}
 
 /**
  * Get all user bets for a specific address
  */
 export async function getUserBets(userAddress: string): Promise<UserBet[]> {
   try {
+    const cfg = getRuntimeConfig();
+    const network = getStacksNetwork();
     // Get all pools to check for user bets
     const pools = await fetchAllPools();
     const userBets: UserBet[] = [];
@@ -29,11 +34,11 @@ export async function getUserBets(userAddress: string): Promise<UserBet[]> {
     for (const pool of pools) {
       try {
         const result = await fetchCallReadOnlyFunction({
-          contractAddress: CONTRACT_ADDRESS,
-          contractName: CONTRACT_NAME,
+          contractAddress: cfg.contract.address,
+          contractName: cfg.contract.name,
           functionName: 'get-user-bet',
           functionArgs: [uintCV(pool.poolId), principalCV(userAddress)],
-          senderAddress: CONTRACT_ADDRESS,
+          senderAddress: cfg.contract.address,
           network,
         });
 
@@ -144,12 +149,14 @@ async function createUserBet(
  */
 async function checkIfClaimed(poolId: number, userAddress: string): Promise<boolean> {
   try {
+    const cfg = getRuntimeConfig();
+    const network = getStacksNetwork();
     const result = await fetchCallReadOnlyFunction({
-      contractAddress: CONTRACT_ADDRESS,
-      contractName: CONTRACT_NAME,
+      contractAddress: cfg.contract.address,
+      contractName: cfg.contract.name,
       functionName: 'get-user-bet', // This would need to be enhanced to track claims
       functionArgs: [uintCV(poolId), principalCV(userAddress)],
-      senderAddress: CONTRACT_ADDRESS,
+      senderAddress: cfg.contract.address,
       network,
     });
     

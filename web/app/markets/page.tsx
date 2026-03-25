@@ -15,6 +15,7 @@ export default function MarketsPage() {
     paginatedMarkets,
     isLoading,
     error,
+    blockHeightWarning,
     filters,
     pagination,
     setSearch,
@@ -94,6 +95,17 @@ export default function MarketsPage() {
             </div>
           </div>
         </div>
+
+        {/* Non-blocking freshness warning */}
+        {blockHeightWarning && (
+          <div
+            className="mb-6 rounded-xl border border-yellow-500/20 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-200"
+            role="status"
+            aria-live="polite"
+          >
+            {blockHeightWarning}
+          </div>
+        )}
 
         {/* Markets Grid */}
         <MarketGrid

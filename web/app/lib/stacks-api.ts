@@ -1,9 +1,11 @@
 import { STACKS_MAINNET, STACKS_TESTNET, StacksNetwork } from "@stacks/network";
 import { fetchCallReadOnlyFunction, cvToValue, uintCV, principalCV, ClarityValue } from "@stacks/transactions";
-import { CONTRACT_ADDRESS, CONTRACT_NAME, DEFAULT_NETWORK, NETWORK_CONFIG } from "./constants";
+import { getRuntimeConfig } from "./runtime-config";
 
-// Use network based on environment
-const network: StacksNetwork = DEFAULT_NETWORK === 'mainnet' ? STACKS_MAINNET : STACKS_TESTNET;
+function getStacksNetwork(): StacksNetwork {
+    const cfg = getRuntimeConfig();
+    return cfg.network === 'testnet' ? STACKS_TESTNET : STACKS_MAINNET;
+}
 
 export interface Pool {
     id: number;
@@ -21,12 +23,14 @@ export interface Pool {
 
 export async function getPoolCount(): Promise<number> {
     try {
+        const cfg = getRuntimeConfig();
+        const network: StacksNetwork = getStacksNetwork();
         const result = await fetchCallReadOnlyFunction({
-            contractAddress: CONTRACT_ADDRESS,
-            contractName: CONTRACT_NAME,
+            contractAddress: cfg.contract.address,
+            contractName: cfg.contract.name,
             functionName: 'get-pool-count',
             functionArgs: [],
-            senderAddress: CONTRACT_ADDRESS,
+            senderAddress: cfg.contract.address,
             network,
         });
 
@@ -40,12 +44,14 @@ export async function getPoolCount(): Promise<number> {
 
 export async function getPool(poolId: number): Promise<Pool | null> {
     try {
+        const cfg = getRuntimeConfig();
+        const network: StacksNetwork = getStacksNetwork();
         const result = await fetchCallReadOnlyFunction({
-            contractAddress: CONTRACT_ADDRESS,
-            contractName: CONTRACT_NAME,
+            contractAddress: cfg.contract.address,
+            contractName: cfg.contract.name,
             functionName: 'get-pool',
             functionArgs: [uintCV(poolId)],
-            senderAddress: CONTRACT_ADDRESS,
+            senderAddress: cfg.contract.address,
             network,
         });
 
@@ -92,12 +98,14 @@ export interface UserBetData {
 
 export async function getUserBet(poolId: number, userAddress: string): Promise<UserBetData | null> {
     try {
+        const cfg = getRuntimeConfig();
+        const network: StacksNetwork = getStacksNetwork();
         const result = await fetchCallReadOnlyFunction({
-            contractAddress: CONTRACT_ADDRESS,
-            contractName: CONTRACT_NAME,
+            contractAddress: cfg.contract.address,
+            contractName: cfg.contract.name,
             functionName: 'get-user-bet',
             functionArgs: [uintCV(poolId), principalCV(userAddress)],
-            senderAddress: CONTRACT_ADDRESS,
+            senderAddress: cfg.contract.address,
             network,
         });
 
@@ -138,11 +146,10 @@ export async function getUserActivity(
     limit: number = 20
 ): Promise<ActivityItem[]> {
     try {
-        const { STACKS_API_BASE_URL } = await import('./constants');
-        const { NETWORK_CONFIG, DEFAULT_NETWORK } = await import('./constants');
-        const explorerBase = NETWORK_CONFIG[DEFAULT_NETWORK].explorerUrl;
+        const cfg = getRuntimeConfig();
+        const explorerBase = cfg.api.explorerUrl;
 
-        const url = `${STACKS_API_BASE_URL}/extended/v1/address/${userAddress}/transactions?limit=${limit}&type=contract_call`;
+        const url = `${cfg.api.coreApiUrl}/extended/v1/address/${userAddress}/transactions?limit=${limit}&type=contract_call`;
         const response = await fetch(url);
 
         if (!response.ok) {
@@ -157,7 +164,7 @@ export async function getUserActivity(
         const predinexTxs = results.filter((tx: any) => {
             const callInfo = tx.contract_call;
             if (!callInfo) return false;
-            return callInfo.contract_id?.includes(CONTRACT_ADDRESS);
+            return callInfo.contract_id?.includes(cfg.contract.address);
         });
 
         return predinexTxs.map((tx: any): ActivityItem => {

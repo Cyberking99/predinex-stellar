@@ -1,6 +1,6 @@
 import type { ProcessedMarket } from './market-types';
 import { fetchAllPools } from './enhanced-stacks-api';
-import { processMarketData, getCurrentBlockHeight } from './market-utils';
+import { processMarketData, fetchCurrentBlockHeightLive } from './market-utils';
 
 /**
  * Client-side cache for the markets list to make the first paint faster.
@@ -22,6 +22,13 @@ export const MARKET_LIST_CACHE_KEY = 'predinex_market_list_v1';
 export const MARKET_LIST_CACHE_VERSION = 1;
 export const MARKET_LIST_CACHE_TTL_MS = 30_000;
 
+export const BLOCK_HEIGHT_WARNING_KEY = 'predinex_block_height_warning_v1';
+export const BLOCK_HEIGHT_WARNING_TTL_MS = MARKET_LIST_CACHE_TTL_MS;
+export type BlockHeightWarningPayload = {
+  cachedAt: number;
+  message: string;
+};
+
 type MarketListCachePayload = {
   version: number;
   cachedAt: number;
@@ -29,6 +36,46 @@ type MarketListCachePayload = {
 };
 
 let inFlightWarmPromise: Promise<ProcessedMarket[]> | null = null;
+
+function writeBlockHeightWarning(
+  warning: string | null,
+  now: number = Date.now()
+): void {
+  if (typeof window === 'undefined') return;
+
+  try {
+    if (!warning) {
+      window.localStorage.removeItem(BLOCK_HEIGHT_WARNING_KEY);
+      return;
+    }
+
+    const payload: BlockHeightWarningPayload = { cachedAt: now, message: warning };
+    window.localStorage.setItem(BLOCK_HEIGHT_WARNING_KEY, JSON.stringify(payload));
+  } catch {
+    // best-effort only
+  }
+}
+
+export function readBlockHeightWarning(now: number = Date.now()): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(BLOCK_HEIGHT_WARNING_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw) as Partial<BlockHeightWarningPayload>;
+    if (typeof parsed.cachedAt !== 'number' || typeof parsed.message !== 'string') return null;
+
+    const ageMs = now - parsed.cachedAt;
+    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > BLOCK_HEIGHT_WARNING_TTL_MS) {
+      window.localStorage.removeItem(BLOCK_HEIGHT_WARNING_KEY);
+      return null;
+    }
+
+    return parsed.message;
+  } catch {
+    return null;
+  }
+}
 
 export function clearMarketListCache(): void {
   if (typeof window === 'undefined') return;
@@ -105,7 +152,8 @@ export async function warmMarketListCache(): Promise<ProcessedMarket[]> {
 
   inFlightWarmPromise = (async () => {
     const poolsData = await fetchAllPools();
-    const currentBlockHeight = getCurrentBlockHeight();
+    const { height: currentBlockHeight, warning } = await fetchCurrentBlockHeightLive();
+    writeBlockHeightWarning(warning);
     const processedMarkets = poolsData.map(pool =>
       processMarketData(pool, currentBlockHeight)
     );

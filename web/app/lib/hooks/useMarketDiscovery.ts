@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { ProcessedMarket, MarketFilters, PaginationState } from '../market-types';
-import { readMarketListCache, warmMarketListCache } from '../market-list-cache';
+import { readBlockHeightWarning, readMarketListCache, warmMarketListCache } from '../market-list-cache';
 
 interface UseMarketDiscoveryState {
   // Data
@@ -14,6 +14,9 @@ interface UseMarketDiscoveryState {
   isLoading: boolean;
   error: string | null;
   
+  // Non-blocking data freshness warnings
+  blockHeightWarning: string | null;
+
   // Filters and pagination
   filters: MarketFilters;
   pagination: PaginationState;
@@ -33,6 +36,10 @@ export function useMarketDiscovery(): UseMarketDiscoveryState {
   const [cacheSnapshot] = useState(() => readMarketListCache());
   const hasFreshInitialCacheRef = useRef(cacheSnapshot.isFresh);
   const hasAnyMarketsRef = useRef(cacheSnapshot.markets.length > 0);
+
+  const [blockHeightWarning, setBlockHeightWarning] = useState<string | null>(() =>
+    readBlockHeightWarning()
+  );
 
   // Core data state
   const [allMarkets, setAllMarkets] = useState<ProcessedMarket[]>(cacheSnapshot.markets);
@@ -62,6 +69,7 @@ export function useMarketDiscovery(): UseMarketDiscoveryState {
       
       setAllMarkets(processedMarkets);
       hasAnyMarketsRef.current = processedMarkets.length > 0;
+      setBlockHeightWarning(readBlockHeightWarning());
     } catch (err) {
       console.error('Failed to fetch markets:', err);
 
@@ -186,6 +194,7 @@ export function useMarketDiscovery(): UseMarketDiscoveryState {
     // Loading states
     isLoading,
     error,
+    blockHeightWarning,
     
     // Filters and pagination
     filters,

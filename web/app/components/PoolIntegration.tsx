@@ -5,7 +5,6 @@ import { useStacks } from './StacksProvider';
 import { useWalletConnect } from '../lib/hooks/useWalletConnect';
 import { openContractCall } from '@stacks/connect';
 import { uintCV, stringAsciiCV } from '@stacks/transactions';
-import { CONTRACT_ADDRESS, CONTRACT_NAME } from '../lib/constants';
 import { Loader2, AlertCircle, CheckCircle, TrendingUp, Users } from 'lucide-react';
 
 interface Pool {

@@ -5,12 +5,13 @@ import {
   ClarityValue,
   ClarityType
 } from '@stacks/transactions';
-import { STACKS_MAINNET } from '@stacks/network';
-import { CONTRACT_ADDRESS as CONST_ADDRESS, CONTRACT_NAME as CONST_NAME } from './constants';
+import { STACKS_MAINNET, STACKS_TESTNET } from '@stacks/network';
+import { getRuntimeConfig } from '../app/lib/runtime-config';
 
-const NETWORK = STACKS_MAINNET;
-const CONTRACT_ADDRESS = CONST_ADDRESS;
-const CONTRACT_NAME = CONST_NAME;
+const runtimeConfig = getRuntimeConfig();
+const NETWORK = runtimeConfig.network === 'testnet' ? STACKS_TESTNET : STACKS_MAINNET;
+const CONTRACT_ADDRESS = runtimeConfig.contract.address;
+const CONTRACT_NAME = runtimeConfig.contract.name;
 
 export interface Pool {
   id: number;

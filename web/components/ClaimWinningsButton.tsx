@@ -5,6 +5,7 @@ import { callContract } from '@/lib/appkit-transactions';
 import { uintCV } from '@stacks/transactions';
 import { useAppKitAccount } from '@reown/appkit/react';
 import { Loader2, Coins } from 'lucide-react';
+import { getRuntimeConfig } from '../app/lib/runtime-config';
 
 interface ClaimWinningsButtonProps {
     poolId: number;
@@ -16,6 +17,7 @@ export default function ClaimWinningsButton({ poolId, isSettled, userHasWinnings
     const [isPending, setIsPending] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const { isConnected } = useAppKitAccount();
+    const { contract } = getRuntimeConfig();
 
     const handleClaim = async () => {
         if (!isConnected) return;
@@ -25,8 +27,8 @@ export default function ClaimWinningsButton({ poolId, isSettled, userHasWinnings
 
         try {
             await callContract({
-                contractAddress: 'SP2WWKKF25SED3K5P6ETY7MDDNBQH50GPSP8EJM8N',
-                contractName: 'predinex-pool-1771407097278',
+                contractAddress: contract.address,
+                contractName: contract.name,
                 functionName: 'claim-winnings',
                 functionArgs: [uintCV(poolId)],
                 onFinish: (data) => {

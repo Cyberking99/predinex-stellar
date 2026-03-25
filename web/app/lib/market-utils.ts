@@ -5,6 +5,7 @@
 
 import { STACKS_MAINNET, STACKS_TESTNET, type StacksNetwork } from '@stacks/network';
 import { PoolData, ProcessedMarket, MarketStatus } from './market-types';
+import { getRuntimeConfig } from './runtime-config';
 
 /**
  * Determines the current status of a market based on its settlement state and expiry time.
@@ -136,10 +137,8 @@ type BlockHeightCachePayload = {
 };
 
 function getStacksNetwork(): StacksNetwork {
-  // NEXT_PUBLIC_* is inlined by Next.js; default to mainnet if unset.
-  const networkEnv =
-    typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_NETWORK : undefined;
-  return networkEnv === 'testnet' ? STACKS_TESTNET : STACKS_MAINNET;
+  const cfg = getRuntimeConfig();
+  return cfg.network === 'testnet' ? STACKS_TESTNET : STACKS_MAINNET;
 }
 
 function readBlockHeightCache(now: number = Date.now()): {

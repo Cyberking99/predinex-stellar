@@ -6,7 +6,7 @@ import { useWalletConnection } from '../../lib/hooks/useWalletConnection';
 import { useToast } from '../../providers/ToastProvider';
 import { openContractCall } from '@stacks/connect';
 import { uintCV } from '@stacks/transactions';
-import { CONTRACT_ADDRESS, CONTRACT_NAME } from '../../lib/constants';
+import { getRuntimeConfig } from '../../lib/runtime-config';
 import { Loader2, Wallet, AlertCircle } from 'lucide-react';
 import { Pool } from '../../lib/stacks-api';
 
@@ -19,6 +19,7 @@ export default function BettingSection({ pool, poolId }: BettingSectionProps) {
     const { userData, authenticate } = useStacks();
     const { isConnected, address } = useWalletConnection();
     const { showToast } = useToast();
+    const { contract } = getRuntimeConfig();
     const [betAmount, setBetAmount] = useState("");
     const [isBetting, setIsBetting] = useState(false);
     const [walletBalance, setWalletBalance] = useState<number | null>(null);
@@ -61,8 +62,8 @@ export default function BettingSection({ pool, poolId }: BettingSectionProps) {
 
         try {
             await openContractCall({
-                contractAddress: CONTRACT_ADDRESS,
-                contractName: CONTRACT_NAME,
+                contractAddress: contract.address,
+                contractName: contract.name,
                 functionName: 'place-bet',
                 functionArgs: [
                     uintCV(poolId),

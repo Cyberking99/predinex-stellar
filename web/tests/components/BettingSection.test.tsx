@@ -80,7 +80,7 @@ describe('BettingSection', () => {
     expect(screen.getByText('Connect Wallet')).toBeInTheDocument();
   });
 
-  it('validates bet amount before placing bet', async () => {
+  it('shows error toast for empty bet amount', async () => {
     vi.mocked(StacksProvider.useStacks).mockReturnValue({
       userData: { profile: { stxAddress: { mainnet: 'ST123' } } } as unknown as any,
       userSession: {} as any,
@@ -105,7 +105,7 @@ describe('BettingSection', () => {
     expect(vi.mocked(StacksConnect.openContractCall)).not.toHaveBeenCalled();
   });
 
-  it('validates minimum bet amount', async () => {
+  it('shows error toast for bet below minimum amount', async () => {
     vi.mocked(StacksProvider.useStacks).mockReturnValue({
       userData: { profile: { stxAddress: { mainnet: 'ST123' } } } as unknown as any,
       userSession: {} as any,

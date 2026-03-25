@@ -1,6 +1,6 @@
 # Development Guide - Predinex Frontend
 
-This document provides instructions for developers looking to contribute to the Predinex frontend.
+This document provides instructions for developers looking to contribute to the Predinex frontend. For information on the release lifecycle, see the [Release Process](../RELEASE.md).
 
 ## Prerequisites
 

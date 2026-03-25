@@ -31,5 +31,7 @@ export const ANIMATION_DURATION = {
   fast: 'duration-150',
   base: 'duration-300',
   slow: 'duration-500',
-} as const;// Ensure network config matches your local clarinet environment
-// Ensure network config matches your local environment
+} as const;
+
+export const CONTRACT_ADDRESS = "SP2WWKKF25SED3K5P6ETY7MDDNBQH50GPSP8EJM8N";
+export const CONTRACT_NAME = "predinex-pool-v1";

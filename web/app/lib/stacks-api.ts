@@ -1,8 +1,29 @@
 import { STACKS_MAINNET, STACKS_TESTNET, StacksNetwork } from "@stacks/network";
-import { fetchCallReadOnlyFunction, cvToValue, uintCV, principalCV, ClarityValue } from "@stacks/transactions";
-import { CONTRACT_ADDRESS, CONTRACT_NAME, DEFAULT_NETWORK, NETWORK_CONFIG } from "./constants";
+import { fetchCallReadOnlyFunction, cvToValue, uintCV, principalCV, ClarityValue, ClarityType } from "@stacks/transactions";
+import { CONTRACT_ADDRESS, CONTRACT_NAME } from "./constants";
+import { DEFAULT_NETWORK, NETWORK_CONFIG } from "./network-config";
+
+// --- Stacks API Types ---
+interface StacksFunctionArg {
+    name: string;
+    repr: string;
+    type: string;
+}
+
+interface StacksTransaction {
+    tx_id: string;
+    tx_status: string;
+    burn_block_time: number;
+    contract_call: {
+        contract_id: string;
+        function_name: string;
+        function_args?: StacksFunctionArg[];
+    };
+}
 
 // Use network based on environment
+// Use network based on environment
+const networkInfo = NETWORK_CONFIG[DEFAULT_NETWORK];
 const network: StacksNetwork = DEFAULT_NETWORK === 'mainnet' ? STACKS_MAINNET : STACKS_TESTNET;
 
 export interface Pool {
@@ -15,8 +36,9 @@ export interface Pool {
     totalA: number;
     totalB: number;
     settled: boolean;
-    winningOutcome: number | null;
+    winningOutcome: number | undefined;
     expiry: number;
+    status: 'active' | 'settled' | 'expired';
 }
 
 export async function getPoolCount(): Promise<number> {
@@ -64,8 +86,9 @@ export async function getPool(poolId: number): Promise<Pool | null> {
             totalA: Number(value['total-a']),
             totalB: Number(value['total-b']),
             settled: value.settled,
-            winningOutcome: value['winning-outcome'] ?? null,
+            winningOutcome: value['winning-outcome'] ?? undefined,
             expiry: Number(value.expiry ?? 0),
+            status: value.settled ? 'settled' : 'active',
         };
     } catch (e) {
         console.error(`Failed to fetch pool ${poolId}`, e);
@@ -73,15 +96,49 @@ export async function getPool(poolId: number): Promise<Pool | null> {
     }
 }
 
-export async function fetchActivePools(): Promise<Pool[]> {
+export async function getMarkets(filter: 'active' | 'settled' | 'all' = 'all'): Promise<Pool[]> {
     const count = await getPoolCount();
     const pools: Pool[] = [];
 
-    for (let i = count - 1; i >= 0; i--) {
+    // pool IDs start from 0
+    for (let i = 0; i < count; i++) {
         const pool = await getPool(i);
-        if (pool) pools.push(pool);
+        if (pool) {
+            if (filter === 'active' && pool.settled) continue;
+            if (filter === 'settled' && !pool.settled) continue;
+            pools.push(pool);
+        }
     }
     return pools;
+}
+
+/** Alias for getMarkets('active') — used by tests */
+export async function fetchActivePools(): Promise<Pool[]> {
+    try {
+        return await getMarkets('active');
+    } catch (e) {
+        console.error('Failed to fetch active pools', e);
+        return [];
+    }
+}
+
+export async function getTotalVolume(): Promise<number> {
+    try {
+        const result = await fetchCallReadOnlyFunction({
+            contractAddress: CONTRACT_ADDRESS,
+            contractName: CONTRACT_NAME,
+            functionName: 'get-total-volume',
+            functionArgs: [],
+            senderAddress: CONTRACT_ADDRESS,
+            network,
+        });
+
+        const value = cvToValue(result);
+        return Number(value);
+    } catch (e) {
+        console.error("Error fetching total volume:", e);
+        return 0;
+    }
 }
 
 export interface UserBetData {
@@ -105,9 +162,9 @@ export async function getUserBet(poolId: number, userAddress: string): Promise<U
         if (!value) return null;
 
         return {
-            amountA: Number(value['amount-a']),
-            amountB: Number(value['amount-b']),
-            totalBet: Number(value['total-bet']),
+            amountA: Number((value['amount-a'] as any)?.value ?? value['amount-a']),
+            amountB: Number((value['amount-b'] as any)?.value ?? value['amount-b']),
+            totalBet: Number((value['total-bet'] as any)?.value ?? value['total-bet']),
         };
     } catch (e) {
         console.error(`Failed to fetch user bet for pool ${poolId}`, e);
@@ -215,9 +272,17 @@ export async function getUserActivity(
     limit: number = 20
 ): Promise<ActivityItem[]> {
     try {
-        const { STACKS_API_BASE_URL } = await import('./constants');
-        const { NETWORK_CONFIG, DEFAULT_NETWORK } = await import('./constants');
-        const explorerBase = NETWORK_CONFIG[DEFAULT_NETWORK].explorerUrl;
+        const { NETWORK_CONFIG, DEFAULT_NETWORK } = await import('./network-config');
+        
+        // Safety check for network configuration
+        const networkInfo = NETWORK_CONFIG[DEFAULT_NETWORK];
+        if (!networkInfo) {
+            console.error(`Missing network configuration for: ${DEFAULT_NETWORK}`);
+            return [];
+        }
+
+        const explorerBase = networkInfo.explorerUrl || 'https://explorer.hiro.so';
+        const STACKS_API_BASE_URL = networkInfo.apiUrl;
 
         const url = `${STACKS_API_BASE_URL}/extended/v1/address/${userAddress}/transactions?limit=${limit}&type=contract_call`;
         const response = await fetch(url);
@@ -228,7 +293,7 @@ export async function getUserActivity(
         }
 
         const data = await response.json();
-        const results: any[] = data.results || [];
+        const results: StacksTransaction[] = data.results || [];
 
         const predinexTxs = results.filter((tx: any) => {
             const callInfo = tx.contract_call;
@@ -236,7 +301,7 @@ export async function getUserActivity(
             return callInfo.contract_id?.includes(CONTRACT_ADDRESS);
         });
 
-        return predinexTxs.map((tx: any): ActivityItem => {
+        return predinexTxs.map((tx): ActivityItem => {
             const callInfo = tx.contract_call;
             const fnName: string = callInfo?.function_name || 'unknown';
 
@@ -249,10 +314,12 @@ export async function getUserActivity(
             if (tx.tx_status === 'success') status = 'success';
             else if (tx.tx_status === 'abort_by_response' || tx.tx_status === 'abort_by_post_condition') status = 'failed';
 
+            // Parse contract events for richer data
+            const event = parseContractEvents(tx);
+
+            // Extract amount from function args if available
             const args: any[] = callInfo?.function_args || [];
             const { amount, poolId } = extractPoolInfo(args);
-            
-            const event = parseContractEvents(tx);
 
             return {
                 txId: tx.tx_id,

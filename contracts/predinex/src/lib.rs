@@ -61,7 +61,7 @@ impl PredinexContract {
         creator.require_auth();
 
         let pool_id = Self::get_pool_counter(&env);
-        
+
         let created_at = env.ledger().timestamp();
         let expiry = created_at + duration;
 
@@ -80,13 +80,15 @@ impl PredinexContract {
             expiry,
         };
 
-        env.storage().persistent().set(&DataKey::Pool(pool_id), &pool);
-        env.storage().persistent().set(&DataKey::PoolCounter, &(pool_id + 1));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pool(pool_id), &pool);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PoolCounter, &(pool_id + 1));
 
-        env.events().publish(
-            (Symbol::new(&env, "create_pool"), pool_id),
-            creator,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "create_pool"), pool_id), creator);
 
         pool_id
     }
@@ -94,12 +96,16 @@ impl PredinexContract {
     pub fn place_bet(env: Env, user: Address, pool_id: u32, outcome: u32, amount: i128) {
         user.require_auth();
 
-        let mut pool = env.storage().persistent().get::<_, Pool>(&DataKey::Pool(pool_id)).expect("Pool not found");
-        
+        let mut pool = env
+            .storage()
+            .persistent()
+            .get::<_, Pool>(&DataKey::Pool(pool_id))
+            .expect("Pool not found");
+
         if pool.settled {
             panic!("Pool already settled");
         }
-        
+
         if env.ledger().timestamp() >= pool.expiry {
             panic!("Pool expired");
         }
@@ -108,9 +114,13 @@ impl PredinexContract {
             panic!("Invalid outcome");
         }
 
-        let token_address = env.storage().persistent().get::<_, Address>(&DataKey::Token).expect("Not initialized");
+        let token_address = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Token)
+            .expect("Not initialized");
         let token_client = token::Client::new(&env, &token_address);
-        
+
         token_client.transfer(&user, &env.current_contract_address(), &amount);
 
         if outcome == 0 {
@@ -119,13 +129,19 @@ impl PredinexContract {
             pool.total_b += amount;
         }
 
-        env.storage().persistent().set(&DataKey::Pool(pool_id), &pool);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pool(pool_id), &pool);
 
-        let mut user_bet = env.storage().persistent().get::<_, UserBet>(&DataKey::UserBet(pool_id, user.clone())).unwrap_or(UserBet {
-            amount_a: 0,
-            amount_b: 0,
-            total_bet: 0,
-        });
+        let mut user_bet = env
+            .storage()
+            .persistent()
+            .get::<_, UserBet>(&DataKey::UserBet(pool_id, user.clone()))
+            .unwrap_or(UserBet {
+                amount_a: 0,
+                amount_b: 0,
+                total_bet: 0,
+            });
 
         if outcome == 0 {
             user_bet.amount_a += amount;
@@ -134,7 +150,9 @@ impl PredinexContract {
         }
         user_bet.total_bet += amount;
 
-        env.storage().persistent().set(&DataKey::UserBet(pool_id, user.clone()), &user_bet);
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserBet(pool_id, user.clone()), &user_bet);
 
         env.events().publish(
             (Symbol::new(&env, "place_bet"), pool_id, user),
@@ -145,8 +163,12 @@ impl PredinexContract {
     pub fn settle_pool(env: Env, caller: Address, pool_id: u32, winning_outcome: u32) {
         caller.require_auth();
 
-        let mut pool = env.storage().persistent().get::<_, Pool>(&DataKey::Pool(pool_id)).expect("Pool not found");
-        
+        let mut pool = env
+            .storage()
+            .persistent()
+            .get::<_, Pool>(&DataKey::Pool(pool_id))
+            .expect("Pool not found");
+
         if caller != pool.creator {
             panic!("Unauthorized");
         }
@@ -163,49 +185,71 @@ impl PredinexContract {
         pool.winning_outcome = Some(winning_outcome);
         pool.settled_at = Some(env.ledger().timestamp());
 
-        env.storage().persistent().set(&DataKey::Pool(pool_id), &pool);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pool(pool_id), &pool);
 
-        env.events().publish(
-            (Symbol::new(&env, "settle_pool"), pool_id),
-            winning_outcome,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "settle_pool"), pool_id), winning_outcome);
     }
 
     pub fn claim_winnings(env: Env, user: Address, pool_id: u32) -> i128 {
         user.require_auth();
 
-        let pool = env.storage().persistent().get::<_, Pool>(&DataKey::Pool(pool_id)).expect("Pool not found");
-        
+        let pool = env
+            .storage()
+            .persistent()
+            .get::<_, Pool>(&DataKey::Pool(pool_id))
+            .expect("Pool not found");
+
         if !pool.settled {
             panic!("Pool not settled");
         }
 
-        let user_bet = env.storage().persistent().get::<_, UserBet>(&DataKey::UserBet(pool_id, user.clone())).expect("No bet found");
-        
+        let user_bet = env
+            .storage()
+            .persistent()
+            .get::<_, UserBet>(&DataKey::UserBet(pool_id, user.clone()))
+            .expect("No bet found");
+
         let winning_outcome = pool.winning_outcome.expect("No winning outcome");
-        
-        let user_winning_bet = if winning_outcome == 0 { user_bet.amount_a } else { user_bet.amount_b };
-        
+
+        let user_winning_bet = if winning_outcome == 0 {
+            user_bet.amount_a
+        } else {
+            user_bet.amount_b
+        };
+
         if user_winning_bet == 0 {
             panic!("No winnings to claim");
         }
 
-        let pool_winning_total = if winning_outcome == 0 { pool.total_a } else { pool.total_b };
+        let pool_winning_total = if winning_outcome == 0 {
+            pool.total_a
+        } else {
+            pool.total_b
+        };
         let total_pool_balance = pool.total_a + pool.total_b;
-        
+
         // Fee calculation (simplified 2% fee as in Clarity contract)
         let fee = (total_pool_balance * 2) / 100;
         let net_pool_balance = total_pool_balance - fee;
 
         let winnings = (user_winning_bet * net_pool_balance) / pool_winning_total;
 
-        let token_address = env.storage().persistent().get::<_, Address>(&DataKey::Token).expect("Not initialized");
+        let token_address = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Token)
+            .expect("Not initialized");
         let token_client = token::Client::new(&env, &token_address);
-        
+
         token_client.transfer(&env.current_contract_address(), &user, &winnings);
 
         // Remove user bet to prevent double claim
-        env.storage().persistent().remove(&DataKey::UserBet(pool_id, user.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::UserBet(pool_id, user.clone()));
 
         env.events().publish(
             (Symbol::new(&env, "claim_winnings"), pool_id, user),
@@ -220,6 +264,9 @@ impl PredinexContract {
     }
 
     fn get_pool_counter(env: &Env) -> u32 {
-        env.storage().persistent().get(&DataKey::PoolCounter).unwrap_or(1)
+        env.storage()
+            .persistent()
+            .get(&DataKey::PoolCounter)
+            .unwrap_or(1)
     }
 }

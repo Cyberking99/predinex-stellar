@@ -7,7 +7,8 @@ import { useToast } from '../../providers/ToastProvider';
 import { openContractCall } from '@stacks/connect';
 import { uintCV } from '@stacks/transactions';
 import { getRuntimeConfig } from '../lib/runtime-config';
-import { Loader2, Wallet, AlertCircle } from 'lucide-react';
+import { useTxStatus } from '../lib/hooks/useTxStatus';
+import { Loader2, Wallet, AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
 import { Pool } from '@/app/lib/stacks-api';
 
 interface BettingSectionProps {
@@ -23,6 +24,7 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
     const { contract } = getRuntimeConfig();
     const [betAmount, setBetAmount] = useState("");
     const [isBetting, setIsBetting] = useState(false);
+    const [txState, trackTx] = useTxStatus();
 
     // Derived directly from connection state — no effect needed for this mock value
     const walletBalance: number | null = isConnected ? 100.0 : null;
@@ -65,7 +67,8 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
                 ],
                 onFinish: (data) => {
                     console.log('Bet placed successfully:', data);
-                    showToast(`Bet placed successfully!`, "success");
+                    trackTx(data.txId);
+                    showToast(`Bet placed! Tracking confirmation…`, "success");
                     setIsBetting(false);
                     setBetAmount("");
                     if (onBetSuccess) {
@@ -152,6 +155,26 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
                     aria-label="Enter bet amount in STX"
                 />
             </div>
+
+            {/* Transaction Status Banner */}
+            {txState.status === 'pending' && (
+                <div role="status" className="flex items-center gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-700 dark:text-yellow-400 text-sm">
+                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                    <span>Transaction pending… <span className="font-mono">{txState.txId?.slice(0, 12)}…</span></span>
+                </div>
+            )}
+            {txState.status === 'success' && (
+                <div role="status" className="flex items-center gap-2 p-3 rounded-lg bg-green-500/10 border border-green-500/20 text-green-700 dark:text-green-400 text-sm">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span>Bet confirmed on-chain!</span>
+                </div>
+            )}
+            {txState.status === 'failed' && (
+                <div role="alert" className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-700 dark:text-red-400 text-sm">
+                    <XCircle className="w-4 h-4 shrink-0" />
+                    <span>{txState.error}</span>
+                </div>
+            )}
 
             {/* Bet Buttons */}
             <div className="grid grid-cols-2 gap-4">

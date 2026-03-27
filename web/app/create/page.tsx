@@ -9,7 +9,8 @@ import { useStacks } from '../components/StacksProvider';
 import { useToast } from '../../providers/ToastProvider';
 import { validatePoolCreationForm } from '../lib/validators';
 import { getRuntimeConfig } from '../lib/runtime-config';
-import { Loader2 } from 'lucide-react';
+import { useTxStatus } from '../lib/hooks/useTxStatus';
+import { Loader2, CheckCircle2, XCircle } from 'lucide-react';
 
 interface FormData {
     title: string;
@@ -29,7 +30,7 @@ export default function CreateMarket() {
     const [form, setForm] = useState<FormData>(EMPTY_FORM);
     const [errors, setErrors] = useState<FormErrors>({});
     const [isSubmitting, setIsSubmitting] = useState(false);
-    const [txId, setTxId] = useState<string | null>(null);
+    const [txState, trackTx] = useTxStatus();
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
         const { name, value } = e.target;
@@ -77,9 +78,9 @@ export default function CreateMarket() {
                     uintCV(duration),
                 ],
                 onFinish: (data) => {
-                    setTxId(data.txId);
+                    trackTx(data.txId);
                     setForm(EMPTY_FORM);
-                    showToast('Market created successfully!', 'success');
+                    showToast('Market submitted! Tracking confirmation…', 'success');
                     setIsSubmitting(false);
                 },
                 onCancel: () => {
@@ -100,10 +101,25 @@ export default function CreateMarket() {
                 <div className="container mx-auto px-4 py-12 max-w-2xl">
                     <h1 className="text-3xl font-bold mb-8">Create New Market</h1>
 
-                    {txId && (
-                        <div role="status" className="mb-6 p-4 rounded-xl border border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400">
-                            <p className="font-semibold">Market created!</p>
-                            <p className="text-sm mt-1 font-mono break-all">Tx: {txId}</p>
+                    {txState.status === 'pending' && (
+                        <div role="status" className="mb-6 p-4 rounded-xl border border-yellow-500/30 bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                            <span>Transaction pending… <span className="font-mono text-sm">{txState.txId?.slice(0, 16)}…</span></span>
+                        </div>
+                    )}
+                    {txState.status === 'success' && (
+                        <div role="status" className="mb-6 p-4 rounded-xl border border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400 flex items-center gap-2">
+                            <CheckCircle2 className="w-4 h-4 shrink-0" />
+                            <div>
+                                <p className="font-semibold">Market confirmed on-chain!</p>
+                                <p className="text-sm font-mono break-all mt-1">Tx: {txState.txId}</p>
+                            </div>
+                        </div>
+                    )}
+                    {txState.status === 'failed' && (
+                        <div role="alert" className="mb-6 p-4 rounded-xl border border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400 flex items-center gap-2">
+                            <XCircle className="w-4 h-4 shrink-0" />
+                            <span>{txState.error}</span>
                         </div>
                     )}
 

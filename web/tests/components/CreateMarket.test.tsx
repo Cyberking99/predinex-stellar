@@ -47,6 +47,10 @@ vi.mock('../../components/AuthGuard', () => ({
     default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
+vi.mock('../../app/lib/hooks/useTxStatus', () => ({
+    useTxStatus: vi.fn(() => [{ status: 'idle', txId: null, error: null }, vi.fn()]),
+}));
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 import * as StacksProvider from '../../app/components/StacksProvider';
@@ -146,6 +150,11 @@ describe('CreateMarket page', () => {
 
     it('shows success feedback after transaction completes', async () => {
         setupWithUser();
+        // Make useTxStatus return 'pending' once trackTx is called
+        const mockTrackTx = vi.fn();
+        vi.mocked(require('../../app/lib/hooks/useTxStatus').useTxStatus)
+            .mockReturnValue([{ status: 'pending', txId: 'mock-tx-id-123', error: null }, mockTrackTx]);
+
         mockOpenContractCall.mockImplementation(({ onFinish }) => {
             onFinish({ txId: 'mock-tx-id-123' });
         });
@@ -158,8 +167,8 @@ describe('CreateMarket page', () => {
 
         await waitFor(() => {
             expect(screen.getByRole('status')).toBeInTheDocument();
-            expect(screen.getByText(/mock-tx-id-123/i)).toBeInTheDocument();
         });
+        expect(mockTrackTx).toHaveBeenCalledWith('mock-tx-id-123');
     });
 
     it('calls authenticate when wallet is not connected and form is submitted', async () => {

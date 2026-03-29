@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useWallet } from './WalletAdapterProvider';
+import { formatDisplayAddress } from '../lib/address-display';
 import { useDisputes } from '../lib/hooks/useDisputes';
-import { getPool } from '../lib/stacks-api';
+import { fetchPredinexContractEvents, predinexReadApi } from '../lib/adapters/predinex-read-api';
 
 interface Dispute {
   id: number;
@@ -29,9 +30,7 @@ interface DisputeVote {
 
 async function fetchDisputesFromContract(): Promise<Dispute[]> {
   try {
-    const cfg = await import('../lib/runtime-config').then(m => m.getRuntimeConfig());
-    const response = await fetch(`${cfg.api.coreApiUrl}/extended/v1/contract/${cfg.contract.address}/${cfg.contract.name}/events?limit=100`);
-    const data = await response.json();
+    const data = await fetchPredinexContractEvents(100);
     
     const disputes: Dispute[] = [];
     const events = data.results || [];
@@ -39,7 +38,7 @@ async function fetchDisputesFromContract(): Promise<Dispute[]> {
     for (const event of events) {
       if (event.event === 'smart_contract_event' && event.data.event_name === 'dispute-created') {
         const eventData = event.data.event_data;
-        const pool = await getPool(eventData.pool_id);
+        const pool = await predinexReadApi.getPool(eventData.pool_id);
         
         disputes.push({
           id: Number(eventData.dispute_id),
@@ -127,10 +126,6 @@ export default function DisputeManagement() {
     }
     loadDisputes();
   }, []);
-
-  const formatAddress = (address: string) => {
-    return `${address.slice(0, 8)}...${address.slice(-8)}`;
-  };
 
   const formatSTX = (microSTX: number) => {
     return (microSTX / 1000000).toFixed(2);
@@ -223,7 +218,7 @@ export default function DisputeManagement() {
                       </div>
                       <h4 className="font-semibold text-lg mb-1">{dispute.poolTitle}</h4>
                       <div className="text-sm text-muted-foreground">
-                        Pool #{dispute.poolId} • Disputed by {formatAddress(dispute.disputer)}
+                        Pool #{dispute.poolId} • Disputed by {formatDisplayAddress(dispute.disputer)}
                       </div>
                     </div>
                     
@@ -332,7 +327,7 @@ export default function DisputeManagement() {
                   </div>
                   <h4 className="font-semibold text-lg mb-1">{dispute.poolTitle}</h4>
                   <div className="text-sm text-muted-foreground">
-                    Pool #{dispute.poolId} • Disputed by {formatAddress(dispute.disputer)}
+                    Pool #{dispute.poolId} • Disputed by {formatDisplayAddress(dispute.disputer)}
                   </div>
                 </div>
                 

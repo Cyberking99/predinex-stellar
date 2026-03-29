@@ -3,7 +3,7 @@
 import { memo } from 'react';
 import { Trophy, RefreshCw, AlertCircle } from 'lucide-react';
 import { useLeaderboard } from '../app/lib/hooks/useLeaderboard';
-import { truncateAddress } from '../app/lib/utils';
+import { formatDisplayAddress } from '../app/lib/address-display';
 
 interface LeaderboardProps {
   currentUserAddress?: string | null;
@@ -92,7 +92,7 @@ const Leaderboard = memo(function Leaderboard({ currentUserAddress }: Leaderboar
                   </div>
                   <div>
                     <span className="font-medium text-sm">
-                      {truncateAddress(entry.address)}
+                      {formatDisplayAddress(entry.address)}
                       {isCurrentUser && (
                         <span className="ml-2 text-xs text-primary font-semibold">(you)</span>
                       )}

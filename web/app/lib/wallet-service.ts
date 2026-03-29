@@ -6,6 +6,7 @@
 import { AppConfig, UserSession, showConnect, FinishedAuthData, UserData } from '@stacks/connect';
 import { STACKS_MAINNET, STACKS_TESTNET, StacksNetwork } from '@stacks/network';
 import { ClarityValue } from '@stacks/transactions';
+import { formatDisplayAddress } from './address-display';
 
 export type WalletType = 'hiro' | 'xverse' | 'leather' | 'unknown';
 export type NetworkType = 'mainnet' | 'testnet';
@@ -241,13 +242,12 @@ export class WalletService {
 
   /**
    * Truncates a Stacks address for user-friendly display (e.g., SP1E...XAMPLE).
-   * 
+   *
    * @param address - The full Stacks address
    * @returns The truncated address string
    */
   static formatAddress(address: string): string {
-    if (!address || address.length < 14) return address;
-    return `${address.slice(0, 8)}...${address.slice(-6)}`;
+    return formatDisplayAddress(address);
   }
 
   /**

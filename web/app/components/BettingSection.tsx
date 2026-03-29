@@ -2,19 +2,15 @@
 
 import { useState } from 'react';
 import { useToast } from '../../providers/ToastProvider';
-import {
-    MIN_BET_STX,
-    showToastPayload,
-    toastMessages,
-    connectivityErrorToast,
-} from '../../lib/toast-messages';
-import { openContractCall } from '@stacks/connect';
-import { uintCV } from '@stacks/transactions';
-import { getRuntimeConfig } from '../lib/runtime-config';
+import { predinexContract } from '../lib/adapters/predinex-contract';
 import { Loader2, Wallet, AlertCircle } from 'lucide-react';
-import { Pool } from '@/app/lib/stacks-api';
+import type { Pool } from '@/app/lib/adapters/types';
 import { useWallet } from './WalletAdapterProvider';
-import { classifyConnectivityIssue } from '../lib/network-errors';
+import { TruncatedAddress } from '../../components/TruncatedAddress';
+import {
+    classifyConnectivityIssue,
+    getConnectivityMessage,
+} from '../lib/network-errors';
 
 interface BettingSectionProps {
     pool: Pool;
@@ -25,7 +21,6 @@ interface BettingSectionProps {
 export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSectionProps) {
     const { isConnected, address, connect } = useWallet();
     const { showToast } = useToast();
-    const { contract } = getRuntimeConfig();
     const [betAmount, setBetAmount] = useState("");
     const [isBetting, setIsBetting] = useState(false);
 
@@ -62,15 +57,10 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
         }, 10000);
 
         try {
-            await openContractCall({
-                contractAddress: contract.address,
-                contractName: contract.name,
-                functionName: 'place-bet',
-                functionArgs: [
-                    uintCV(poolId),
-                    uintCV(outcome),
-                    uintCV(amountInMicroStx),
-                ],
+            await predinexContract.placeBet({
+                poolId,
+                outcome,
+                amountMicroStx: amountInMicroStx,
                 onFinish: (data) => {
                     window.clearTimeout(slowNetworkTimer);
                     console.log('Bet placed successfully:', data);
@@ -131,7 +121,7 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
                     <div className="flex justify-between items-center">
                         <div>
                             <p className="text-sm text-muted-foreground">Connected Wallet</p>
-                            <p className="font-mono text-sm">{address.slice(0, 8)}...{address.slice(-6)}</p>
+                            <TruncatedAddress address={address} className="font-mono text-sm" />
                         </div>
                         <div className="text-right">
                             <p className="text-sm text-muted-foreground">Balance</p>

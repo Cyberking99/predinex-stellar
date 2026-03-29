@@ -4,21 +4,12 @@ import { useState } from "react";
 import Link from "next/link";
 import { LogOut, Menu, X, Wallet } from "lucide-react";
 import { useWallet } from './WalletAdapterProvider';
-import { truncateAddress } from "../lib/utils";
 import { ICON_CLASS } from "../lib/constants";
+import { WalletAddressCopyButton } from "../../components/WalletAddressCopyButton";
 
 export default function Navbar() {
     const { isConnected, address, connect, disconnect } = useWallet();
     const [isMenuOpen, setIsMenuOpen] = useState(false);
-    const [copied, setCopied] = useState(false);
-
-    const handleCopyAddress = () => {
-        if (address) {
-            navigator.clipboard.writeText(address);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        }
-    };
 
     return (
         <nav aria-label="Main navigation" className="fixed top-0 w-full z-50 glass-panel !rounded-none !border-x-0 !border-t-0 border-b border-white/10 shadow-lg">
@@ -55,16 +46,7 @@ export default function Navbar() {
                     <div className="hidden md:flex items-center gap-4">
                         {isConnected && address ? (
                             <div className="flex items-center gap-3">
-                                <button
-                                    onClick={handleCopyAddress}
-                                    className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-full border border-border hover:bg-muted transition-colors group relative"
-                                    title="Copy address"
-                                >
-                                    <Wallet className={ICON_CLASS.sm + " text-primary"} />
-                                    <span className="text-sm font-mono font-medium">
-                                        {copied ? 'Copied!' : truncateAddress(address)}
-                                    </span>
-                                </button>
+                                <WalletAddressCopyButton address={address} />
                                 <button
                                     onClick={disconnect}
                                     className="p-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-full border border-red-500/20 transition-all hover:scale-110 active:scale-95"

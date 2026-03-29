@@ -3,8 +3,8 @@
 import { FormEvent, useState } from 'react';
 import { openContractCall } from '@stacks/connect';
 import { stringAsciiCV, uintCV } from '@stacks/transactions';
-import Navbar from '../../components/Navbar';
-import AuthGuard from '../../components/AuthGuard';
+import Navbar from '../components/Navbar';
+import AuthGuard from '../components/AuthGuard';
 import { useStacks } from '../components/StacksProvider';
 import { useToast } from '../../providers/ToastProvider';
 import { useLocalStorage } from '../lib/hooks/useLocalStorage';

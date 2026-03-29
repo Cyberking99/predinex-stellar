@@ -1,6 +1,6 @@
 'use client';
-import Navbar from "../../components/Navbar";
-import AuthGuard from "../../components/AuthGuard";
+import Navbar from "../components/Navbar";
+import AuthGuard from "../components/AuthGuard";
 import PortfolioOverview from "../../components/PortfolioOverview";
 import PlatformStats from "../../components/PlatformStats";
 import ActivityFeed from "../components/ActivityFeed";

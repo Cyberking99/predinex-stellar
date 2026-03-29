@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from 'react';
+import { formatDisplayAddress } from '../lib/address-display';
 
 interface OracleProvider {
   id: number;
@@ -98,10 +99,6 @@ export default function OracleManagement() {
     return () => clearTimeout(timer);
   }, []);
 
-  const formatAddress = (address: string) => {
-    return `${address.slice(0, 8)}...${address.slice(-8)}`;
-  };
-
   const formatTimestamp = (timestamp: number) => {
     return new Date(timestamp).toLocaleString();
   };
@@ -137,7 +134,7 @@ export default function OracleManagement() {
                   </span>
                 </div>
                 <div className="font-mono text-sm text-muted-foreground">
-                  {formatAddress(provider.address)}
+                  {formatDisplayAddress(provider.address)}
                 </div>
               </div>
               
@@ -207,7 +204,7 @@ export default function OracleManagement() {
                   </div>
                   
                   <div className="text-sm text-muted-foreground">
-                    by {provider ? formatAddress(provider.address) : 'Unknown'}
+                    by {provider ? formatDisplayAddress(provider.address) : 'Unknown'}
                   </div>
                 </div>
                 

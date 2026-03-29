@@ -4,6 +4,7 @@ import { useWallet } from '../app/components/WalletAdapterProvider';
 import { Wallet } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useToast } from '../providers/ToastProvider';
+import { formatDisplayAddress } from '../app/lib/address-display';
 import {
   classifyConnectivityIssue,
   getConnectivityMessage,
@@ -62,7 +63,7 @@ export default function WalletButton({ className, label = 'Connect Wallet' }: Wa
           className={`flex items-center gap-2 bg-secondary/10 hover:bg-secondary/20 text-secondary px-4 py-2 rounded-full border border-secondary/20 transition-colors font-medium text-sm focus:outline-none focus:ring-2 focus:ring-secondary/50 ${className}`}
         >
           <Wallet className="w-4 h-4" />
-          {address ? `${address.slice(0, 4)}...${address.slice(-4)}` : 'Connected'}
+          {address ? formatDisplayAddress(address) : 'Connected'}
         </button>
       )}
     </>

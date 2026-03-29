@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from 'react';
+import { formatDisplayAddress } from '../lib/address-display';
 
 interface Pool {
   id: number;
@@ -180,10 +181,6 @@ export default function AutomatedResolutionStatus() {
     }, 0);
     return () => clearTimeout(timer);
   }, []);
-
-  const formatAddress = (address: string) => {
-    return `${address.slice(0, 8)}...${address.slice(-8)}`;
-  };
 
   const formatSTX = (microSTX: number) => {
     return (microSTX / 1000000).toFixed(2);
@@ -430,7 +427,7 @@ export default function AutomatedResolutionStatus() {
                       </div>
                       <h4 className="font-semibold text-lg mb-1">{pool.title}</h4>
                       <div className="text-sm text-muted-foreground">
-                        Creator: {formatAddress(pool.creator)}
+                        Creator: {formatDisplayAddress(pool.creator)}
                       </div>
                     </div>
                     

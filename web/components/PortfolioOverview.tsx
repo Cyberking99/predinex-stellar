@@ -1,6 +1,7 @@
 "use client";
 
 import { useWallet } from '../app/components/WalletAdapterProvider';
+import { TruncatedAddress } from './TruncatedAddress';
 import { Wallet, CircleDollarSign, Info } from 'lucide-react';
 import Card from './ui/Card';
 import Tooltip from './ui/Tooltip';
@@ -22,7 +23,7 @@ export default function PortfolioOverview() {
                     </h2>
                     <p className="text-muted-foreground font-medium flex items-center gap-2">
                         <Wallet className="w-4 h-4" />
-                        {address?.slice(0, 8)}...{address?.slice(-8)}
+                        {address ? <TruncatedAddress address={address} /> : null}
                     </p>
                 </div>
 

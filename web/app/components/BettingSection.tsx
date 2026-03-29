@@ -6,6 +6,7 @@ import { predinexContract } from '../lib/adapters/predinex-contract';
 import { Loader2, Wallet, AlertCircle } from 'lucide-react';
 import type { Pool } from '@/app/lib/adapters/types';
 import { useWallet } from './WalletAdapterProvider';
+import { TruncatedAddress } from '../../components/TruncatedAddress';
 import {
     classifyConnectivityIssue,
     getConnectivityMessage,
@@ -123,7 +124,7 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
                     <div className="flex justify-between items-center">
                         <div>
                             <p className="text-sm text-muted-foreground">Connected Wallet</p>
-                            <p className="font-mono text-sm">{address.slice(0, 8)}...{address.slice(-6)}</p>
+                            <TruncatedAddress address={address} className="font-mono text-sm" />
                         </div>
                         <div className="text-right">
                             <p className="text-sm text-muted-foreground">Balance</p>

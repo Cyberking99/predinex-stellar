@@ -12,6 +12,7 @@ pub enum DataKey {
     Token,
     Treasury,
     TreasuryRecipient,
+    PoolParticipants(u32),
 }
 
 #[derive(Clone)]
@@ -24,6 +25,7 @@ pub struct Pool {
     pub outcome_b_name: String,
     pub total_a: i128,
     pub total_b: i128,
+    pub participant_count: u32,
     pub settled: bool,
     pub winning_outcome: Option<u32>,
     pub created_at: u64,
@@ -77,6 +79,7 @@ impl PredinexContract {
             outcome_b_name: outcome_b,
             total_a: 0,
             total_b: 0,
+            participant_count: 0,
             settled: false,
             winning_outcome: None,
             created_at,
@@ -138,10 +141,6 @@ impl PredinexContract {
             pool.total_b += amount;
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Pool(pool_id), &pool);
-
         let mut user_bet = env
             .storage()
             .persistent()
@@ -151,6 +150,15 @@ impl PredinexContract {
                 amount_b: 0,
                 total_bet: 0,
             });
+
+        let is_first_bet = user_bet.total_bet == 0;
+        if is_first_bet {
+            pool.participant_count += 1;
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pool(pool_id), &pool);
 
         if outcome == 0 {
             user_bet.amount_a += amount;
@@ -353,7 +361,7 @@ impl PredinexContract {
     /// Handles missing/gap pools safely by returning None for those positions.
     pub fn get_pools_batch(env: Env, start_id: u32, count: u32) -> Vec<Option<Pool>> {
         let mut pools = Vec::new(&env);
-        let max_id = Self::get_pool_count(&env);
+        let max_id = Self::get_pool_count(env.clone());
 
         // Limit count to prevent excessive gas usage
         let effective_count = if count > 100 { 100 } else { count };
@@ -382,5 +390,13 @@ impl PredinexContract {
         env.storage()
             .persistent()
             .get(&DataKey::UserBet(pool_id, user))
+    }
+
+    pub fn get_participant_count(env: Env, pool_id: u32) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<_, Pool>(&DataKey::Pool(pool_id))
+            .map(|p| p.participant_count)
+            .unwrap_or(0)
     }
 }

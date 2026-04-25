@@ -1157,4 +1157,100 @@ fn e5_get_pools_batch_handles_gaps() {
     assert!(batch.get(1).is_some(), "pool 2 should exist");
 }
 
+// ============================================================================
+// Issue: Pool participant count
+//
+// participant_count on Pool tracks distinct users. It increments only on a
+// user's first bet in that pool; repeat bets from the same address must not
+// increase the count.
+// ============================================================================
+
+/// F1: participant_count starts at 0 when a pool is created.
+#[test]
+fn f1_participant_count_starts_at_zero() {
+    let t = setup();
+    let pool_id = make_pool(&t);
+    let pool = t.client.get_pool(&pool_id).expect("pool must exist");
+    assert_eq!(pool.participant_count, 0u32, "new pool must have zero participants");
+}
+
+/// F2: first bet from a user increments participant_count to 1.
+#[test]
+fn f2_first_bet_increments_participant_count() {
+    let t = setup();
+    let pool_id = make_pool(&t);
+    t.client.place_bet(&t.user, &pool_id, &0u32, &100i128);
+    let pool = t.client.get_pool(&pool_id).expect("pool must exist");
+    assert_eq!(pool.participant_count, 1u32, "first bet must increment count to 1");
+}
+
+/// F3: repeat bets from the same user do not increment participant_count.
+#[test]
+fn f3_repeat_bets_same_user_do_not_increment_count() {
+    let t = setup();
+    let pool_id = make_pool(&t);
+    t.client.place_bet(&t.user, &pool_id, &0u32, &100i128);
+    t.client.place_bet(&t.user, &pool_id, &1u32, &200i128);
+    t.client.place_bet(&t.user, &pool_id, &0u32, &50i128);
+    let pool = t.client.get_pool(&pool_id).expect("pool must exist");
+    assert_eq!(pool.participant_count, 1u32, "repeat bets must not increment count");
+}
+
+/// F4: bets from multiple distinct users each increment participant_count once.
+#[test]
+fn f4_multiple_users_each_counted_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_admin = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+
+    let contract_id = env.register(PredinexContract, ());
+    let client = PredinexContractClient::new(&env, &contract_id);
+    client.initialize(&token, &admin);
+
+    let pool_id = client.create_pool(
+        &admin,
+        &String::from_str(&env, "Multi-user pool"),
+        &String::from_str(&env, "Desc"),
+        &String::from_str(&env, "Yes"),
+        &String::from_str(&env, "No"),
+        &3600u64,
+    );
+
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let user3 = Address::generate(&env);
+    token_admin.mint(&user1, &1000i128);
+    token_admin.mint(&user2, &1000i128);
+    token_admin.mint(&user3, &1000i128);
+
+    client.place_bet(&user1, &pool_id, &0u32, &100i128);
+    assert_eq!(client.get_pool(&pool_id).unwrap().participant_count, 1u32);
+
+    client.place_bet(&user2, &pool_id, &1u32, &100i128);
+    assert_eq!(client.get_pool(&pool_id).unwrap().participant_count, 2u32);
+
+    client.place_bet(&user3, &pool_id, &0u32, &100i128);
+    assert_eq!(client.get_pool(&pool_id).unwrap().participant_count, 3u32);
+
+    // Repeat bets from existing users must not change the count
+    client.place_bet(&user1, &pool_id, &1u32, &50i128);
+    client.place_bet(&user2, &pool_id, &0u32, &50i128);
+    assert_eq!(client.get_pool(&pool_id).unwrap().participant_count, 3u32,
+        "count must remain 3 after repeat bets");
+}
+
+/// F5: get_participant_count returns the same value as pool.participant_count.
+#[test]
+fn f5_get_participant_count_matches_pool_field() {
+    let t = setup();
+    let pool_id = make_pool(&t);
+    t.client.place_bet(&t.user, &pool_id, &0u32, &100i128);
+    let pool = t.client.get_pool(&pool_id).expect("pool must exist");
+    let count = t.client.get_participant_count(&pool_id);
+    assert_eq!(count, pool.participant_count, "get_participant_count must match pool field");
+}
+
 }

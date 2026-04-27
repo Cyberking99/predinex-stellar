@@ -365,6 +365,31 @@ impl PredinexContract {
         result
     }
 
+    /// Validate that a string is not empty or whitespace-only
+    fn validate_non_empty_string(s: &String) {
+        let len = s.len();
+        if len == 0 {
+            panic!("String cannot be empty");
+        }
+
+        // Check if string contains only whitespace
+        let mut buf = [0u8; 64];
+        let copy_len: usize = if len < 64 { len as usize } else { 64 };
+        s.copy_into_slice(&mut buf[..copy_len]);
+
+        let mut has_non_whitespace = false;
+        for i in 0..copy_len {
+            if buf[i] != b' ' && buf[i] != b'\t' && buf[i] != b'\n' && buf[i] != b'\r' {
+                has_non_whitespace = true;
+                break;
+            }
+        }
+
+        if !has_non_whitespace {
+            panic!("String cannot be whitespace-only");
+        }
+    }
+
     pub fn create_pool(
         env: Env,
         creator: Address,

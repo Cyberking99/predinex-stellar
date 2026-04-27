@@ -3,6 +3,7 @@ use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Str
 
 mod test;
 mod protocol_fee_tests;
+mod pause_tests;
 
 #[derive(Clone)]
 #[contracttype]

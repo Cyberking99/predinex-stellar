@@ -2,9 +2,7 @@
 extern crate std;
 use super::*;
 use soroban_sdk::String;
-use soroban_sdk::{
-    testutils::Address as _, testutils::Events, testutils::Ledger, Address, Env, IntoVal,
-};
+use soroban_sdk::{testutils::Address as _, testutils::Events, testutils::Ledger, Address, Env};
 use std::format;
 
 #[test]
@@ -127,7 +125,10 @@ fn test_large_pool_payouts_with_checked_arithmetic() {
     client.settle_pool(&creator, &pool_id, &0);
 
     let winnings = client.claim_winnings(&user1, &pool_id);
-    assert!(winnings > 0, "Large pool winnings must compute successfully");
+    assert!(
+        winnings > 0,
+        "Large pool winnings must compute successfully"
+    );
     assert_eq!(token.balance(&user1), 100 + winnings);
 }
 
@@ -166,11 +167,14 @@ fn test_place_bet_rejects_pool_total_overflow() {
     client.place_bet(&user1, &pool_id, &0, &huge_amount);
 
     // Overflow on the second bet should fail predictably.
-    let result = std::panic::catch_unwind(|| {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.place_bet(&user2, &pool_id, &0, &2);
-    });
+    }));
 
-    assert!(result.is_err(), "Pool total overflow should reject the second bet");
+    assert!(
+        result.is_err(),
+        "Pool total overflow should reject the second bet"
+    );
 }
 
 #[test]
@@ -753,7 +757,6 @@ fn setup() -> TestEnv<'static> {
 
     // Leak env lifetime — acceptable in tests where we own everything
     let client: PredinexContractClient<'static> = unsafe { core::mem::transmute(client) };
-    let env: Env = unsafe { core::mem::transmute(env) };
 
     TestEnv {
         env,
@@ -2760,4 +2763,89 @@ fn l5_claim_winnings_emits_claim_event() {
 
     let expected_fee = (500i128 * 2) / 100;
     assert_eq!(claim_event.fee_amount, expected_fee);
+}
+
+/// #195 — Per-pool protocol revenue matches settlement fee and sums to treasury.
+#[test]
+fn issue195_per_pool_treasury_credited_sums_to_aggregate_before_withdraw() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PredinexContract, ());
+    let client = PredinexContractClient::new(&env, &contract_id);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_id.address());
+
+    client.initialize(&token_id.address(), &token_admin);
+
+    let creator = Address::generate(&env);
+    let u1 = Address::generate(&env);
+    let u2 = Address::generate(&env);
+    let u3 = Address::generate(&env);
+    let u4 = Address::generate(&env);
+
+    token_admin_client.mint(&u1, &10_000);
+    token_admin_client.mint(&u2, &10_000);
+    token_admin_client.mint(&u3, &10_000);
+    token_admin_client.mint(&u4, &10_000);
+
+    let expiry_ts = 10_000u64;
+
+    let pool1 = client.create_pool(
+        &creator,
+        &String::from_str(&env, "M1"),
+        &String::from_str(&env, "D"),
+        &String::from_str(&env, "Y"),
+        &String::from_str(&env, "N"),
+        &3600,
+    );
+    let pool2 = client.create_pool(
+        &creator,
+        &String::from_str(&env, "M2"),
+        &String::from_str(&env, "D"),
+        &String::from_str(&env, "Y"),
+        &String::from_str(&env, "N"),
+        &3600,
+    );
+
+    client.place_bet(&u1, &pool1, &0, &300);
+    client.place_bet(&u2, &pool1, &1, &200);
+    client.place_bet(&u3, &pool2, &0, &100);
+    client.place_bet(&u4, &pool2, &1, &100);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = expiry_ts;
+    });
+
+    client.settle_pool(&creator, &pool1, &0);
+    client.settle_pool(&creator, &pool2, &0);
+
+    let fee_bps = client.get_protocol_fee() as i128;
+    let vol1 = 500i128;
+    let vol2 = 200i128;
+    let fee1 = (vol1 * fee_bps) / 10000;
+    let fee2 = (vol2 * fee_bps) / 10000;
+
+    let r1_after_settle = client.get_pool_protocol_revenue(&pool1);
+    let r2_after_settle = client.get_pool_protocol_revenue(&pool2);
+    assert_eq!(r1_after_settle.settlement_protocol_fee, fee1);
+    assert_eq!(r2_after_settle.settlement_protocol_fee, fee2);
+    assert_eq!(r1_after_settle.treasury_credited, 0);
+    assert_eq!(r2_after_settle.treasury_credited, 0);
+
+    client.claim_winnings(&u1, &pool1);
+    client.claim_winnings(&u3, &pool2);
+
+    let r1 = client.get_pool_protocol_revenue(&pool1);
+    let r2 = client.get_pool_protocol_revenue(&pool2);
+    assert_eq!(r1.settlement_protocol_fee, fee1);
+    assert_eq!(r2.settlement_protocol_fee, fee2);
+    assert_eq!(r1.treasury_credited, fee1);
+    assert_eq!(r2.treasury_credited, fee2);
+
+    let treasury = client.get_treasury_balance();
+    assert_eq!(treasury, r1.treasury_credited + r2.treasury_credited);
+    assert_eq!(treasury, fee1 + fee2);
 }

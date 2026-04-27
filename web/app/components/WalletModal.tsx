@@ -32,20 +32,23 @@ export default function WalletModal({ isOpen, onClose, onSelectWallet, error }: 
         {
             id: 'leather' as const,
             name: 'Leather',
-            description: 'Connect with Leather wallet extension',
+            description: 'Not supported on Stellar',
             icon: Wallet,
+            isSupported: false,
         },
         {
             id: 'xverse' as const,
             name: 'Xverse',
-            description: 'Connect with Xverse wallet extension',
+            description: 'Not supported on Stellar',
             icon: Wallet,
+            isSupported: false,
         },
         {
             id: 'walletconnect' as const,
             name: 'WalletConnect',
-            description: 'Connect with mobile wallet via QR code',
+            description: 'Connect with Stellar-compatible wallet via QR code',
             icon: Smartphone,
+            isSupported: true,
         },
     ];
 
@@ -80,14 +83,16 @@ export default function WalletModal({ isOpen, onClose, onSelectWallet, error }: 
                                     onSelectWallet(wallet.id);
                                     onClose();
                                 }}
-                                disabled={!walletAvailability[wallet.id] && wallet.id !== 'walletconnect'}
-                                aria-label={walletAvailability[wallet.id]
-                                    ? `Connect using ${wallet.name} (Available)`
-                                    : wallet.id === 'walletconnect'
-                                        ? `Connect using WalletConnect (via QR code)`
-                                        : `Connect using ${wallet.name} (Not installed)`
+                                disabled={!wallet.isSupported || (!walletAvailability[wallet.id] && wallet.id !== 'walletconnect')}
+                                aria-label={!wallet.isSupported
+                                    ? `Connect using ${wallet.name} (Unsupported)`
+                                    : walletAvailability[wallet.id]
+                                        ? `Connect using ${wallet.name} (Available)`
+                                        : wallet.id === 'walletconnect'
+                                            ? `Connect using WalletConnect (via QR code)`
+                                            : `Connect using ${wallet.name} (Not installed)`
                                 }
-                                aria-disabled={!walletAvailability[wallet.id] && wallet.id !== 'walletconnect'}
+                                aria-disabled={!wallet.isSupported || (!walletAvailability[wallet.id] && wallet.id !== 'walletconnect')}
                                 className="w-full flex items-center gap-4 p-4 rounded-xl border border-border hover:border-primary/50 hover:bg-primary/5 transition-all disabled:opacity-50 disabled:cursor-not-allowed relative"
                             >
                                 <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -96,7 +101,12 @@ export default function WalletModal({ isOpen, onClose, onSelectWallet, error }: 
                                 <div className="flex-1 text-left">
                                     <div className="font-semibold flex items-center gap-2">
                                         {wallet.name}
-                                        {walletAvailability[wallet.id] && wallet.id !== 'walletconnect' && (
+                                        {!wallet.isSupported && (
+                                            <span className="text-[10px] uppercase tracking-wider bg-red-500/10 text-red-500 px-2 py-0.5 rounded-full font-medium">
+                                                Unsupported
+                                            </span>
+                                        )}
+                                        {wallet.isSupported && walletAvailability[wallet.id] && wallet.id !== 'walletconnect' && (
                                             <CheckCircle2 className="w-4 h-4 text-green-500" />
                                         )}
                                     </div>

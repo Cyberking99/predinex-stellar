@@ -53,6 +53,8 @@ export function StacksProvider({ children }: { children: ReactNode }) {
     const [isLoading, setIsLoading] = useState(true);
     // Controls the visibility of the multi-wallet selection modal
     const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
+    // Tracks any errors that occur during the wallet connection flow
+    const [walletError, setWalletError] = useState<string | undefined>();
 
     useEffect(() => {
         /**
@@ -94,6 +96,7 @@ export function StacksProvider({ children }: { children: ReactNode }) {
      * UI helper to trigger the wallet selection UI.
      */
     const openWalletModal = useCallback(() => {
+        setWalletError(undefined);
         setIsWalletModalOpen(true);
     }, []);
 
@@ -103,6 +106,7 @@ export function StacksProvider({ children }: { children: ReactNode }) {
      * @param walletType - The brand of wallet being connected (Leather, Xverse, etc.)
      */
     const handleWalletSelection = useCallback(async (walletType: WalletType) => {
+        setWalletError(undefined);
         try {
             await connectWallet({
                 walletType,
@@ -125,9 +129,15 @@ export function StacksProvider({ children }: { children: ReactNode }) {
                     console.log('User cancelled wallet connection');
                 },
             });
-        } catch (error) {
+        } catch (error: any) {
             console.error('Wallet connection error:', error);
-            alert(`Failed to connect to ${walletType}. Please try again.`);
+            const errorMessage = error?.message || 'Failed to connect. Please try again.';
+            if (walletType === 'walletconnect' || errorMessage.toLowerCase().includes('unsupported')) {
+                setWalletError('Unsupported provider. Please use a Stellar-compatible wallet.');
+            } else {
+                setWalletError(`Failed to connect to ${walletType}. Please try again.`);
+            }
+            setIsWalletModalOpen(true);
         }
     }, [userSession]);
 
@@ -155,6 +165,7 @@ export function StacksProvider({ children }: { children: ReactNode }) {
                 isOpen={isWalletModalOpen}
                 onClose={() => setIsWalletModalOpen(false)}
                 onSelectWallet={handleWalletSelection}
+                error={walletError}
             />
             {children}
         </StacksContext.Provider>

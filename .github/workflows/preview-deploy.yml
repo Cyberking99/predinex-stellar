@@ -22,7 +22,8 @@ jobs:
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write   # post / update PR comment
+      pull-requests: write   # PR metadata access
+      issues: write          # post / update PR comment via issues API
       contents: read
       statuses: write        # create commit status check
 

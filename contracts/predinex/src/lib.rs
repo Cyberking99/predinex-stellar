@@ -1,9 +1,9 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec};
 
-mod test;
-mod protocol_fee_tests;
 mod pause_tests;
+mod protocol_fee_tests;
+mod test;
 
 // ── Issue #175: Event schema versioning ──────────────────────────────────────
 //
@@ -214,9 +214,8 @@ pub enum ClaimPreview {
 pub struct BetEvent {
     pub outcome: u32,
     pub amount: i128,
-    pub amount_a: i128,
-    pub amount_b: i128,
-    pub total_bet: i128,
+    pub total_yes: i128,
+    pub total_no: i128,
 }
 
 /// #169 — Event payload emitted by `create_pool`.
@@ -311,12 +310,12 @@ impl PredinexContract {
         if fee_bps < PROTOCOL_FEE_MIN_BPS || fee_bps > PROTOCOL_FEE_MAX_BPS {
             panic!("Fee out of bounds");
         }
-        env.storage().persistent().set(&DataKey::ProtocolFee, &fee_bps);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ProtocolFee, &fee_bps);
 
-        env.events().publish(
-            (Symbol::new(&env, "protocol_fee_set"),),
-            (caller, fee_bps),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "protocol_fee_set"),), (caller, fee_bps));
     }
 
     /// #166 — Return the current protocol fee in basis points.
@@ -440,7 +439,10 @@ impl PredinexContract {
         let pool_id = Self::get_pool_counter(&env);
 
         if duration == 0 || duration > MAX_POOL_DURATION {
-            panic!(format!("Duration must be between 1 and {} seconds", MAX_POOL_DURATION));
+            panic!(format!(
+                "Duration must be between 1 and {} seconds",
+                MAX_POOL_DURATION
+            ));
         }
 
         let created_at = env.ledger().timestamp();
@@ -526,9 +528,15 @@ impl PredinexContract {
         token_client.transfer(&user, &env.current_contract_address(), &amount);
 
         if outcome == 0 {
-            pool.total_a = pool.total_a.checked_add(amount).expect("Pool total overflow");
+            pool.total_a = pool
+                .total_a
+                .checked_add(amount)
+                .expect("Pool total overflow");
         } else {
-            pool.total_b = pool.total_b.checked_add(amount).expect("Pool total overflow");
+            pool.total_b = pool
+                .total_b
+                .checked_add(amount)
+                .expect("Pool total overflow");
         }
 
         let mut user_bet = env
@@ -557,11 +565,20 @@ impl PredinexContract {
         );
 
         if outcome == 0 {
-            user_bet.amount_a = user_bet.amount_a.checked_add(amount).expect("User bet overflow");
+            user_bet.amount_a = user_bet
+                .amount_a
+                .checked_add(amount)
+                .expect("User bet overflow");
         } else {
-            user_bet.amount_b = user_bet.amount_b.checked_add(amount).expect("User bet overflow");
+            user_bet.amount_b = user_bet
+                .amount_b
+                .checked_add(amount)
+                .expect("User bet overflow");
         }
-        user_bet.total_bet = user_bet.total_bet.checked_add(amount).expect("User bet overflow");
+        user_bet.total_bet = user_bet
+            .total_bet
+            .checked_add(amount)
+            .expect("User bet overflow");
 
         env.storage()
             .persistent()
@@ -573,6 +590,10 @@ impl PredinexContract {
             POOL_BUMP_TARGET,
         );
 
+        // Calculate totals for the event
+        let total_yes = pool.total_a;
+        let total_no = pool.total_b;
+
         env.events().publish(
             (
                 Symbol::new(&env, "place_bet"),
@@ -583,9 +604,8 @@ impl PredinexContract {
             BetEvent {
                 outcome,
                 amount,
-                amount_a: user_bet.amount_a,
-                amount_b: user_bet.amount_b,
-                total_bet: user_bet.total_bet,
+                total_yes,
+                total_no,
             },
         );
     }

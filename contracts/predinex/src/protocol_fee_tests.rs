@@ -1,6 +1,9 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env, String,
+};
 
 fn setup_contract() -> (Env, PredinexContractClient<'static>, Address, Address) {
     let env = Env::default();
@@ -54,7 +57,7 @@ fn test_set_protocol_fee_at_boundaries() {
 fn test_claim_winnings_uses_configured_fee() {
     let (env, client, admin, token) = setup_contract();
     let token_admin_client = token::StellarAssetClient::new(&env, &token);
-    
+
     client.set_protocol_fee(&admin, &500);
 
     let creator = Address::generate(&env);

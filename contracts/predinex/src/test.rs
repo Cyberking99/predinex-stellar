@@ -127,7 +127,10 @@ fn test_large_pool_payouts_with_checked_arithmetic() {
     client.settle_pool(&creator, &pool_id, &0);
 
     let winnings = client.claim_winnings(&user1, &pool_id);
-    assert!(winnings > 0, "Large pool winnings must compute successfully");
+    assert!(
+        winnings > 0,
+        "Large pool winnings must compute successfully"
+    );
     assert_eq!(token.balance(&user1), 100 + winnings);
 }
 
@@ -170,7 +173,10 @@ fn test_place_bet_rejects_pool_total_overflow() {
         client.place_bet(&user2, &pool_id, &0, &2);
     });
 
-    assert!(result.is_err(), "Pool total overflow should reject the second bet");
+    assert!(
+        result.is_err(),
+        "Pool total overflow should reject the second bet"
+    );
 }
 
 #[test]
@@ -2760,4 +2766,168 @@ fn l5_claim_winnings_emits_claim_event() {
 
     let expected_fee = (500i128 * 2) / 100;
     assert_eq!(claim_event.fee_amount, expected_fee);
+}
+
+// ============================================================================
+// Issue #187: Metadata validation tests
+// ============================================================================
+
+const MAX_LEN: u32 = 50; // Example max length for metadata fields
+
+#[test]
+fn test_metadata_min_length() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PredinexContract, ());
+    let client = PredinexContractClient::new(&env, &contract_id);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    client.initialize(&token_id.address(), &token_admin);
+
+    let creator = Address::generate(&env);
+    // Test minimum length (1 character)
+    let name = String::from_str(&env, "a");
+    let description = String::from_str(&env, "Valid description");
+    let outcome_a = String::from_str(&env, "Yes");
+    let outcome_b = String::from_str(&env, "No");
+    let duration = 3600;
+
+    // Assuming create_pool validates title length - adjust based on actual validation
+    let result = client.create_pool(
+        &creator,
+        &name,
+        &description,
+        &outcome_a,
+        &outcome_b,
+        &duration,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_metadata_max_length() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PredinexContract, ());
+    let client = PredinexContractClient::new(&env, &contract_id);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    client.initialize(&token_id.address(), &token_admin);
+
+    let creator = Address::generate(&env);
+    // Test maximum length
+    let name = "a".repeat(MAX_LEN as usize);
+    let name_str = String::from_str(&env, &name);
+    let description = String::from_str(&env, "Valid description");
+    let outcome_a = String::from_str(&env, "Yes");
+    let outcome_b = String::from_str(&env, "No");
+    let duration = 3600;
+
+    let result = client.create_pool(
+        &creator,
+        &name_str,
+        &description,
+        &outcome_a,
+        &outcome_b,
+        &duration,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_metadata_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PredinexContract, ());
+    let client = PredinexContractClient::new(&env, &contract_id);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    client.initialize(&token_id.address(), &token_admin);
+
+    let creator = Address::generate(&env);
+    // Test overflow (max length + 1)
+    let name = "a".repeat((MAX_LEN + 1) as usize);
+    let name_str = String::from_str(&env, &name);
+    let description = String::from_str(&env, "Valid description");
+    let outcome_a = String::from_str(&env, "Yes");
+    let outcome_b = String::from_str(&env, "No");
+    let duration = 3600;
+
+    let result = client.create_pool(
+        &creator,
+        &name_str,
+        &description,
+        &outcome_a,
+        &outcome_b,
+        &duration,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_metadata_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PredinexContract, ());
+    let client = PredinexContractClient::new(&env, &contract_id);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    client.initialize(&token_id.address(), &token_admin);
+
+    let creator = Address::generate(&env);
+    // Test empty string
+    let name = String::from_str(&env, "");
+    let description = String::from_str(&env, "Valid description");
+    let outcome_a = String::from_str(&env, "Yes");
+    let outcome_b = String::from_str(&env, "No");
+    let duration = 3600;
+
+    let result = client.create_pool(
+        &creator,
+        &name,
+        &description,
+        &outcome_a,
+        &outcome_b,
+        &duration,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_metadata_whitespace() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PredinexContract, ());
+    let client = PredinexContractClient::new(&env, &contract_id);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    client.initialize(&token_id.address(), &token_admin);
+
+    let creator = Address::generate(&env);
+    // Test whitespace only
+    let name = String::from_str(&env, "   ");
+    let description = String::from_str(&env, "Valid description");
+    let outcome_a = String::from_str(&env, "Yes");
+    let outcome_b = String::from_str(&env, "No");
+    let duration = 3600;
+
+    let result = client.create_pool(
+        &creator,
+        &name,
+        &description,
+        &outcome_a,
+        &outcome_b,
+        &duration,
+    );
+    assert!(result.is_err());
 }

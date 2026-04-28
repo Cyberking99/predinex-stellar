@@ -7,7 +7,10 @@
 
 #![cfg(test)]
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env, String,
+};
 
 // ── Test harness ──────────────────────────────────────────────────────────────
 
@@ -66,8 +69,7 @@ impl TestCtx {
 
     /// Mint tokens to `user` and place a bet on `pool_id`.
     fn fund_and_bet(&self, user: &Address, pool_id: u32, outcome: u32, amount: i128) {
-        let token_admin_client =
-            token::StellarAssetClient::new(&self.env, &self.token_id);
+        let token_admin_client = token::StellarAssetClient::new(&self.env, &self.token_id);
         token_admin_client.mint(user, &amount);
         self.client.place_bet(user, &pool_id, &outcome, &amount);
     }
@@ -75,7 +77,8 @@ impl TestCtx {
     /// Advance ledger past the pool's deadline and settle it using pool_creator.
     fn settle(&self, pool_id: u32, winning_outcome: u32) {
         self.env.ledger().with_mut(|li| li.timestamp = 7200);
-        self.client.settle_pool(&self.pool_creator, &pool_id, &winning_outcome);
+        self.client
+            .settle_pool(&self.pool_creator, &pool_id, &winning_outcome);
     }
 }
 
@@ -189,7 +192,10 @@ fn test_claim_winnings_succeeds_after_unfreeze() {
     ctx.client.unfreeze_pool(&ctx.freeze_admin, &pool_id);
     ctx.client.settle_pool(&ctx.pool_creator, &pool_id, &0);
     let payout = ctx.client.claim_winnings(&user_a, &pool_id);
-    assert!(payout > 0, "winner should receive a payout after unfreeze + re-settle");
+    assert!(
+        payout > 0,
+        "winner should receive a payout after unfreeze + re-settle"
+    );
 }
 
 // ── settle_pool: frozen pool blocks non-creator callers ───────────────────────
@@ -290,7 +296,8 @@ fn test_rotate_treasury_recipient_unaffected_by_pool_freeze() {
     ctx.client.freeze_pool(&ctx.freeze_admin, &pool_id);
 
     let new_recipient = Address::generate(&ctx.env);
-    ctx.client.rotate_treasury_recipient(&ctx.token_admin, &new_recipient);
+    ctx.client
+        .rotate_treasury_recipient(&ctx.token_admin, &new_recipient);
     let stored = ctx.client.get_treasury_recipient().unwrap();
     assert_eq!(stored, new_recipient);
 }
@@ -303,7 +310,10 @@ fn test_get_pool_readable_while_frozen() {
     let pool_id = ctx.open_pool();
     ctx.client.freeze_pool(&ctx.freeze_admin, &pool_id);
     let pool = ctx.client.get_pool(&pool_id);
-    assert!(pool.is_some(), "get_pool should return data even when frozen");
+    assert!(
+        pool.is_some(),
+        "get_pool should return data even when frozen"
+    );
 }
 
 #[test]
@@ -324,7 +334,10 @@ fn test_get_user_bet_readable_while_frozen() {
     ctx.client.freeze_pool(&ctx.freeze_admin, &pool_id);
 
     let bet = ctx.client.get_user_bet(&pool_id, &user);
-    assert!(bet.is_some(), "get_user_bet should work while pool is frozen");
+    assert!(
+        bet.is_some(),
+        "get_user_bet should work while pool is frozen"
+    );
 }
 
 // ── set_freeze_admin restrictions ─────────────────────────────────────────────

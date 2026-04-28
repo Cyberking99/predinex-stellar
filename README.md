@@ -127,6 +127,19 @@ We welcome contributions! Please see our development guides for more information
 
 The project uses GitHub Actions to ensure code quality and prevent regressions. The workflow runs on every push and pull request to `main`.
 
+### Preview Deployments
+
+Pull requests automatically generate preview deployments for the web app, making it easy to review UI changes:
+
+- 🚀 **Automatic**: Every PR with web changes gets a live preview
+- 🔗 **Shareable**: Preview URLs are posted as PR comments
+- 🔒 **Safe**: Previews use testnet configuration only
+- ⚡ **Fast**: Deployments complete in ~2 minutes
+
+**Setup Guide**: See [Preview Deployment Quick Start](./docs/PREVIEW_SETUP_QUICKSTART.md) for 5-minute setup instructions.
+
+**Full Documentation**: [Preview Deployments Guide](./docs/preview-deployments.md)
+
 ### Local Verification
 
 You can run the same checks locally to verify your changes before pushing:

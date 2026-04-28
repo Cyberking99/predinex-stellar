@@ -113,7 +113,7 @@ Predinex Stellar follows a phased approach to bring a premium betting experience
 
 ### Phase 2: Frontend Migration (IN PROGRESS)
 - 🔄 Stellar SDK integration.
-- 🔄 Freighter wallet support.
+- 🔄 Wallet and network support are tracked in the canonical [wallet and network support page](./web/docs/WALLET_NETWORK_SUPPORT.md).
 - ⏳ Real-time market tracking on Stellar.
 
 ## 🤝 Contributing & Releases

@@ -189,11 +189,12 @@ jobs:
             const deploymentUrl = '${{ steps.deploy.outputs.url }}';
             const jobStatus = '${{ job.status }}';
             const state = jobStatus === 'success' ? 'success' : 'failure';
+            const statusSha = context.payload.pull_request.head.sha;
 
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              sha: context.sha,
+              sha: statusSha,
               state: state,
               target_url: deploymentUrl || '',
               description: state === 'success'

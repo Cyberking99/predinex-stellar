@@ -1,4 +1,6 @@
 #![no_std]
+extern crate alloc;
+use alloc::vec;
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec};
 
 mod pause_tests;
@@ -92,6 +94,13 @@ const PROTOCOL_FEE_DEFAULT_BPS: u32 = 200;
 const MIN_POOL_DURATION_SECS: u64 = 300;
 /// #151 — Maximum pool lifetime in seconds (matches web validators / tests).
 const MAX_POOL_DURATION_SECS: u64 = 1_000_000;
+
+/// #154 — Maximum length for pool title in bytes.
+const MAX_TITLE_LENGTH: u32 = 100;
+/// #154 — Maximum length for pool description in bytes.
+const MAX_DESCRIPTION_LENGTH: u32 = 1_000;
+/// #154 — Maximum length for pool outcome labels in bytes.
+const MAX_OUTCOME_LENGTH: u32 = 50;
 
 /// Explicit lifecycle status for a prediction pool.
 ///
@@ -312,25 +321,6 @@ pub struct CreatePoolEvent {
     pub outcome_b_name: String,
 }
 
-/// #158 — Tracks cumulative winner claims and whether the protocol fee was
-/// credited to the treasury for this pool.
-#[derive(Clone, Default)]
-#[contracttype]
-pub struct PoolPayoutState {
-    pub claimed_winning_stake: i128,
-    pub paid_out: i128,
-    pub fee_credited: bool,
-}
-
-/// Event payload emitted by `claim_winnings`.
-#[derive(Clone)]
-#[contracttype]
-pub struct ClaimEvent {
-    pub amount: i128,
-    pub fee_amount: i128,
-    pub winning_outcome: u32,
-    pub total_pool_size: i128,
-}
 
 /// #195 — Pool-level protocol revenue exposed for analytics and audits.
 ///
@@ -496,9 +486,15 @@ impl PredinexContract {
     /// practical market labels.
     fn normalize_outcome(env: &Env, s: &String) -> soroban_sdk::Bytes {
         let len = s.len() as usize;
+        let mut raw = vec![0u8; len];
+        s.copy_into_slice(&mut raw);
         let copy_len = if len < 64 { len } else { 64 };
         let mut buf = [0u8; 64];
-        s.copy_into_slice(&mut buf[..copy_len]);
+        let mut i = 0usize;
+        while i < copy_len {
+            buf[i] = raw[i];
+            i += 1;
+        }
 
         let mut start = 0usize;
         let mut end = copy_len;
@@ -522,22 +518,23 @@ impl PredinexContract {
 
     /// Validate that a string is not empty or whitespace-only
     fn validate_non_empty_string(s: &String) {
-        let len = s.len();
+        let len = s.len() as usize;
         if len == 0 {
             panic!("String cannot be empty");
         }
 
-        // Check if string contains only whitespace
-        let mut buf = [0u8; 64];
-        let copy_len: usize = if len < 64 { len as usize } else { 64 };
-        s.copy_into_slice(&mut buf[..copy_len]);
-
+        // Check if string contains only whitespace.
+        let mut raw = vec![0u8; len];
+        s.copy_into_slice(&mut raw);
         let mut has_non_whitespace = false;
-        for b in buf.iter().take(copy_len) {
-            if *b != b' ' && *b != b'\t' && *b != b'\n' && *b != b'\r' {
+        let mut i = 0usize;
+        while i < len {
+            let b = raw[i];
+            if b != b' ' && b != b'\t' && b != b'\n' && b != b'\r' {
                 has_non_whitespace = true;
                 break;
             }
+            i += 1;
         }
 
         if !has_non_whitespace {
@@ -557,9 +554,20 @@ impl PredinexContract {
         creator.require_auth();
 
         Self::validate_non_empty_string(&title);
+        if title.len() > MAX_TITLE_LENGTH {
+            panic!("Title exceeds max length");
+        }
+
         Self::validate_non_empty_string(&description);
+        if description.len() > MAX_DESCRIPTION_LENGTH {
+            panic!("Description exceeds max length");
+        }
+
         Self::validate_non_empty_string(&outcome_a);
         Self::validate_non_empty_string(&outcome_b);
+        if outcome_a.len() > MAX_OUTCOME_LENGTH || outcome_b.len() > MAX_OUTCOME_LENGTH {
+            panic!("Outcome exceeds max length");
+        }
 
         // #151 — Reject pools below the minimum duration before any state
         // writes or fee transfers, so a rejection leaves the contract
@@ -599,11 +607,8 @@ impl PredinexContract {
 
         let pool_id = Self::get_pool_counter(&env);
 
-        if duration == 0 || duration > MAX_POOL_DURATION {
-            panic!(format!(
-                "Duration must be between 1 and {} seconds",
-                MAX_POOL_DURATION
-            ));
+        if duration == 0 || duration > MAX_POOL_DURATION_SECS {
+            panic!("Duration must be between 1 and 1000000 seconds");
         }
 
         let created_at = env.ledger().timestamp();

@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   validateContractId,
+  validatePoolDescription,
+  validatePoolTitle,
+  validateOutcome,
+  MAX_TITLE_LENGTH,
+  MAX_DESCRIPTION_LENGTH,
+  MAX_OUTCOME_LENGTH,
   validateDuration,
   MIN_POOL_DURATION_SECS,
   MAX_POOL_DURATION_SECS,
@@ -189,5 +195,25 @@ describe('validateDuration (issue #151)', () => {
   it('accepts a duration exactly at the upper bound', () => {
     const result = validateDuration(MAX_POOL_DURATION_SECS);
     expect(result.valid).toBe(true);
+  });
+});
+
+describe('metadata length validation (issue #154)', () => {
+  it('rejects title above contract max length', () => {
+    const result = validatePoolTitle('T'.repeat(MAX_TITLE_LENGTH + 1));
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/100.*fewer/i);
+  });
+
+  it('rejects description above contract max length', () => {
+    const result = validatePoolDescription('D'.repeat(MAX_DESCRIPTION_LENGTH + 1));
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/1000.*fewer/i);
+  });
+
+  it('rejects outcome above contract max length', () => {
+    const result = validateOutcome('A'.repeat(MAX_OUTCOME_LENGTH + 1));
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/50.*fewer/i);
   });
 });

@@ -9,13 +9,18 @@
  * @returns Validation result
  */
 import { MAX_POOL_DURATION_SECONDS } from './constants';
+export const MAX_TITLE_LENGTH = 100;
+export const MAX_DESCRIPTION_LENGTH = 1000;
+export const MAX_OUTCOME_LENGTH = 50;
+export const MIN_POOL_DURATION_SECS = 300;
+export const MAX_POOL_DURATION_SECS = MAX_POOL_DURATION_SECONDS;
 
 export function validatePoolTitle(title: string): { valid: boolean; error?: string } {
   if (!title || title.trim().length === 0) {
     return { valid: false, error: 'Title is required' };
   }
-  if (title.length > 256) {
-    return { valid: false, error: 'Title must be less than 256 characters' };
+  if (title.length > MAX_TITLE_LENGTH) {
+    return { valid: false, error: `Title must be ${MAX_TITLE_LENGTH} characters or fewer` };
   }
   if (title.length < 5) {
     return { valid: false, error: 'Title must be at least 5 characters' };
@@ -32,8 +37,11 @@ export function validatePoolDescription(description: string): { valid: boolean; 
   if (!description || description.trim().length === 0) {
     return { valid: false, error: 'Description is required' };
   }
-  if (description.length > 512) {
-    return { valid: false, error: 'Description must be less than 512 characters' };
+  if (description.length > MAX_DESCRIPTION_LENGTH) {
+    return {
+      valid: false,
+      error: `Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`,
+    };
   }
   if (description.length < 10) {
     return { valid: false, error: 'Description must be at least 10 characters' };
@@ -50,8 +58,8 @@ export function validateOutcome(outcome: string): { valid: boolean; error?: stri
   if (!outcome || outcome.trim().length === 0) {
     return { valid: false, error: 'Outcome is required' };
   }
-  if (outcome.length > 128) {
-    return { valid: false, error: 'Outcome must be less than 128 characters' };
+  if (outcome.length > MAX_OUTCOME_LENGTH) {
+    return { valid: false, error: `Outcome must be ${MAX_OUTCOME_LENGTH} characters or fewer` };
   }
   if (outcome.length < 2) {
     return { valid: false, error: 'Outcome must be at least 2 characters' };
@@ -74,10 +82,10 @@ export function validateDuration(duration: number): { valid: boolean; error?: st
       error: `Duration must be at least ${MIN_POOL_DURATION_SECS} seconds (5 minutes)`,
     };
   }
-  if (duration > MAX_POOL_DURATION_SECONDS) {
+  if (duration > MAX_POOL_DURATION_SECS) {
     return {
       valid: false,
-      error: `Duration must be less than ${MAX_POOL_DURATION_SECONDS.toLocaleString()} seconds`,
+      error: `Duration must be less than ${MAX_POOL_DURATION_SECS.toLocaleString()} seconds`,
     };
   }
   return { valid: true };

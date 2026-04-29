@@ -7,6 +7,8 @@ import * as WalletAdapterProvider from '../../app/components/WalletAdapterProvid
 import { useToast } from '../../providers/ToastProvider';
 import { predinexContract } from '../../app/lib/adapters/predinex-contract';
 import { renderWithProviders } from '../helpers/renderWithProviders';
+import * as NetworkMismatch from '../../lib/hooks/useNetworkMismatch';
+import { toastMessages } from '../../lib/toast-messages';
 
 // Mock WalletAdapterProvider hook
 vi.mock('../../app/components/WalletAdapterProvider', () => ({
@@ -25,6 +27,11 @@ vi.mock('../../providers/ToastProvider', () => ({
   // ToastProvider is used by renderWithProviders; pass children through so the
   // wrapper renders without throwing "No ToastProvider export" errors.
   ToastProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+// Mock useNetworkMismatch hook
+vi.mock('../../lib/hooks/useNetworkMismatch', () => ({
+  useNetworkMismatch: vi.fn(),
 }));
 
 
@@ -68,6 +75,13 @@ describe('BettingSection', () => {
     vi.clearAllMocks();
     vi.mocked(useToast).mockReturnValue({
       showToast,
+    });
+    vi.mocked(NetworkMismatch.useNetworkMismatch).mockReturnValue({
+      isMismatch: false,
+      expectedNetworkType: 'testnet',
+      expectedNetworkName: 'Stellar Testnet',
+      currentNetworkName: 'Stellar Testnet',
+      switchNetwork: vi.fn(),
     });
   });
 
@@ -114,12 +128,12 @@ describe('BettingSection', () => {
     renderWithProviders(<BettingSection pool={mockPool} poolId={0} />);
 
     const input = screen.getByLabelText(/Enter bet amount/i);
-    await user.type(input, '0.05'); // Less than 0.1 STX minimum
+    await user.type(input, '0.05'); // Less than 0.1 XLM minimum
 
     const betButton = screen.getByText(/Bet on Outcome A/i);
     await user.click(betButton);
 
-    expect(showToast).toHaveBeenCalledWith('Minimum bet amount is 0.1 STX.', 'error');
+    expect(showToast).toHaveBeenCalledWith('Minimum bet is 0.1 XLM', 'error');
     expect(vi.mocked(predinexContract.placeBet)).not.toHaveBeenCalled();
   });
 
@@ -141,7 +155,7 @@ describe('BettingSection', () => {
         expect.objectContaining({
           poolId: 0,
           outcome: 0,
-          amountMicroStx: 1_500_000,
+          amountMicroStx: 15_000_000,
         })
       );
     });

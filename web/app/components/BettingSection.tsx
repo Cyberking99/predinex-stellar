@@ -29,6 +29,7 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
     const { showToast } = useToast();
     const [betAmount, setBetAmount] = useState("");
     const [isBetting, setIsBetting] = useState(false);
+    const { isMismatch, expectedNetworkName } = useNetworkMismatch();
 
     // Placeholder for XLM minimums
     const MIN_BET_XLM = 0.1;
@@ -44,18 +45,18 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
 
         const amount = parseFloat(betAmount);
         if (!betAmount || isNaN(amount) || amount <= 0) {
-            showToast('Please enter a valid amount', 'error');
+            showToastPayload(showToast, toastMessages.bet.invalidAmount);
             return;
         }
 
         if (amount < MIN_BET_XLM) {
-            showToast(`Minimum bet is ${MIN_BET_XLM} XLM`, 'error');
+            showToastPayload(showToast, toastMessages.bet.minBet());
             return;
         }
 
         // Check wallet balance
         if (walletBalance !== null && amount > walletBalance) {
-            showToast(`Insufficient balance. Available: ${walletBalance} XLM`, 'error');
+            showToastPayload(showToast, toastMessages.bet.insufficientBalance(walletBalance));
             return;
         }
 
@@ -71,7 +72,7 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
                     if (address) {
                         invalidateOnPlaceBet({ poolId, userAddress: address });
                     }
-                    showToast('Bet placed successfully!', 'success');
+                    showToastPayload(showToast, toastMessages.bet.success);
                     setIsBetting(false);
                     setBetAmount("");
                     if (onBetSuccess) {
@@ -79,7 +80,7 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
                     }
                 },
                 onCancel: () => {
-                    showToast('Transaction cancelled', 'info');
+                    showToastPayload(showToast, toastMessages.bet.transactionCancelled);
                     setIsBetting(false);
                 },
             });
@@ -135,11 +136,21 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
             )}
 
             {/* Balance Warning */}
-            {walletBalance !== null && walletBalance < MIN_BET_XLM && (
+            {walletBalance !== null && walletBalance < MIN_BET_XLM && !isMismatch && (
                 <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg flex gap-2">
                     <AlertCircle className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
                     <p className="text-sm text-yellow-600">
                         Insufficient balance to place bets. Minimum: {MIN_BET_XLM} XLM
+                    </p>
+                </div>
+            )}
+
+            {/* Network Mismatch Warning */}
+            {isMismatch && (
+                <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg flex gap-2">
+                    <AlertCircle className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
+                    <p className="text-sm text-yellow-600">
+                        Please switch to {expectedNetworkName} to place bets.
                     </p>
                 </div>
             )}
@@ -155,7 +166,7 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
                     placeholder="e.g., 10"
                     value={betAmount}
                     onChange={(e) => setBetAmount(e.target.value)}
-                    disabled={isBetting || (walletBalance !== null && walletBalance < MIN_BET_XLM)}
+                    disabled={isBetting || (walletBalance !== null && walletBalance < MIN_BET_XLM) || isMismatch}
                     aria-label="Enter bet amount in XLM"
                 />
             </div>
@@ -164,17 +175,17 @@ export default function BettingSection({ pool, poolId, onBetSuccess }: BettingSe
             <div className="grid grid-cols-2 gap-4">
                 <button
                     onClick={() => placeBet(0)}
-                    disabled={isBetting || (walletBalance !== null && walletBalance < MIN_BET_XLM)}
+                    disabled={isBetting || (walletBalance !== null && walletBalance < MIN_BET_XLM) || isMismatch}
                     className="py-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl transition-all disabled:opacity-50 flex justify-center items-center gap-2"
                 >
-                    {isBetting ? <Loader2 className="w-5 h-5 animate-spin" /> : `Bet on ${pool.outcomeA}`}
+                    {isBetting ? <Loader2 className="w-5 h-5 animate-spin" /> : isMismatch ? 'Wrong Network' : `Bet on ${pool.outcomeA}`}
                 </button>
                 <button
                     onClick={() => placeBet(1)}
-                    disabled={isBetting || (walletBalance !== null && walletBalance < MIN_BET_XLM)}
+                    disabled={isBetting || (walletBalance !== null && walletBalance < MIN_BET_XLM) || isMismatch}
                     className="py-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-all disabled:opacity-50 flex justify-center items-center gap-2"
                 >
-                    {isBetting ? <Loader2 className="w-5 h-5 animate-spin" /> : `Bet on ${pool.outcomeB}`}
+                    {isBetting ? <Loader2 className="w-5 h-5 animate-spin" /> : isMismatch ? 'Wrong Network' : `Bet on ${pool.outcomeB}`}
                 </button>
             </div>
         </div>

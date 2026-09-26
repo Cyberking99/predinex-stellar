@@ -4,6 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { Keypair } from 'stellar-sdk';
 import {
   EmergencyWithdrawalService,
   EmergencyStatus,
@@ -57,6 +58,42 @@ describe('EmergencyWithdrawalService', () => {
     it('should check cooldown', async () => {
       const remaining = await service.getCooldownRemaining();
       expect(remaining).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe('Real submission failure handling (issue #1195)', () => {
+    it('failed activateEmergency does not report success and returns no mock hash', async () => {
+      const unreachable = new EmergencyWithdrawalService(
+        'http://127.0.0.1:1',
+        mockContractId
+      );
+      const admin = Keypair.random();
+      const result = await unreachable.activateEmergency(admin, 'test reason');
+      expect(result.success).toBe(false);
+      expect(result.txHash).toBeUndefined();
+      expect(result.error).toBeDefined();
+      expect(result.txHash).not.toBe('mock_tx_hash_activate');
+    });
+
+    it('failed deactivateEmergency does not report success and returns no mock hash', async () => {
+      const unreachable = new EmergencyWithdrawalService(
+        'http://127.0.0.1:1',
+        mockContractId
+      );
+      const admin = Keypair.random();
+      const result = await unreachable.deactivateEmergency(admin, 'test reason');
+      expect(result.success).toBe(false);
+      expect(result.txHash).toBeUndefined();
+      expect(result.error).toBeDefined();
+      expect(result.txHash).not.toBe('mock_tx_hash_deactivate');
+    });
+
+    it('rejects empty reason without contacting the chain', async () => {
+      const admin = Keypair.random();
+      const result = await service.activateEmergency(admin, '');
+      expect(result.success).toBe(false);
+      expect(result.txHash).toBeUndefined();
+      expect(result.error).toMatch(/Reason is required/);
     });
   });
 });

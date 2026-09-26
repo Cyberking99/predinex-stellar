@@ -22,6 +22,8 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { body, param, query, validationResult } from 'express-validator';
+import { authMiddleware } from '../middleware/auth.js';
+import { rateLimitMiddleware } from '../middleware/rate-limit.js';
 
 // ============================================================================
 // Types & Interfaces
@@ -335,7 +337,12 @@ class ContractService {
 // ============================================================================
 
 const router = Router();
+export const budgetRouter = router;
 const contractService = new ContractService();
+
+// Auth + rate limiting apply to every budget route (see #1196).
+router.use(authMiddleware);
+router.use(rateLimitMiddleware);
 
 /**
  * POST /api/budget/plan

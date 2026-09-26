@@ -27,6 +27,23 @@ Where:
 | **AtRisk** | $1.00 \le HF < 1.20$ | Critical margin | Repay, Deposit Collateral |
 | **Liquidatable** | $HF < 1.00$ ($10,000 \text{ bps}$) | Under-collateralized | Liquidation enabled |
 
+### Risk parameters: absent is not zero
+
+`collateralFactorBps`, `liquidationThresholdBps` and `borrowRateBps` accept `0` as a real
+value. Only a field that is **missing, empty or unparseable** takes its default
+(`collateralFactorBps` 7500, `liquidationThresholdBps` 8000, `borrowRateBps` 500), and
+values are clamped to 0-10,000. Nothing is substituted silently: the response carries a
+`warnings` array.
+
+| Warning code | Meaning |
+|:---|:---|
+| `DEFAULT_APPLIED` | The caller sent nothing usable for `field` on `asset`; `appliedValue` was used |
+| `ZERO_LIQUIDATION_THRESHOLD` | The caller explicitly sent a threshold of 0 (the asset adds no safety margin) |
+| `ZERO_COLLATERAL_FACTOR` | The caller explicitly sent a factor of 0 (the asset adds no borrowing capacity) |
+
+`SimulationEngine.calculateHealth` itself rejects a missing or out-of-range factor rather than
+treating it as 0.
+
 ---
 
 ## 2. Insurance Marketplace & Reserve Fund
@@ -94,6 +111,16 @@ sequenceDiagram
 - **Liquidation Event:** $-100$ points penalty.
 - **Default Event:** $-250$ points penalty.
 - **Decay:** Inactivity $> 90$ days decays score by 25 points per quarter toward baseline 300.
+
+### Repayment preview is an estimate
+
+`POST` reputation simulate returns `isEstimate: true` for every action. The `amount` of an
+`OnTimeRepay` preview is caller-supplied and is not checked against any on-chain repayment, so
+it is parsed exactly (decimal string, no float rounding) and **capped**: at the user's
+outstanding debt when they have borrow history, otherwise at 100,000 base units (at most +10 of
+the +50 volume bonus). `volumeCounted` reports what was credited and `volumeCapped` whether the
+supplied amount was reduced or ignored. Send amounts as strings; a JSON number above 2^53 is not
+trusted.
 
 ### Tier Perks
 

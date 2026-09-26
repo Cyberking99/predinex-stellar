@@ -231,6 +231,15 @@ export interface ReputationSimulateRequest {
 }
 
 export interface ReputationSimulateResponse {
+  /**
+   * Always true: this is a preview computed from a caller-supplied amount that
+   * is not checked against any on-chain repayment, so it is not authoritative.
+   */
+  isEstimate: true;
+  /** OnTimeRepay only: the volume (base units) that was credited toward the bonus. */
+  volumeCounted?: string;
+  /** OnTimeRepay only: true when the supplied amount was reduced to a ceiling or ignored. */
+  volumeCapped?: boolean;
   currentScore: number;
   currentTier: ReputationTier;
   projectedScore: number;

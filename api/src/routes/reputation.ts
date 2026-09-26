@@ -35,6 +35,18 @@ export class ReputationRouteHandler {
     };
   }
 
+  /**
+   * Token amounts should arrive as decimal strings. A JSON number above 2^53 has
+   * already lost precision by the time it is parsed, so it is passed on as an
+   * unusable value (earning no volume bonus) rather than guessed at.
+   */
+  private static readAmount(amount: unknown): string | undefined {
+    if (typeof amount === 'number') {
+      return Number.isSafeInteger(amount) && amount >= 0 ? String(amount) : 'invalid';
+    }
+    return amount ? String(amount) : undefined;
+  }
+
   public handleSimulateAction(body: any): ApiResponse<ReputationSimulateResponse> {
     if (!body || !body.userAddress || !body.action) {
       return {
@@ -47,7 +59,7 @@ export class ReputationRouteHandler {
     const request: ReputationSimulateRequest = {
       userAddress: String(body.userAddress),
       action: body.action,
-      amount: body.amount ? String(body.amount) : undefined,
+      amount: ReputationRouteHandler.readAmount(body.amount),
     };
 
     const result = this.engine.simulateImpact(request);

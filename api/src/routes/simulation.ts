@@ -3,9 +3,19 @@
  * Technical Scope: api/src/routes/simulation.ts
  */
 
-import { PositionSimulationRequest, ApiResponse, PositionSimulationResponse } from '../types/index.js';
+import {
+  PositionSimulationRequest,
+  ApiResponse,
+  PositionSimulationResponse,
+  SimulationWarning,
+} from '../types/index.js';
 import { SimulationEngine } from '../services/simulation-engine.js';
 import { SecuritySanitizer } from '../middleware/security.js';
+
+/** Documented defaults applied only when a parameter is absent or unparseable. */
+export const DEFAULT_LIQUIDATION_THRESHOLD_BPS = 8000;
+export const DEFAULT_COLLATERAL_FACTOR_BPS = 7500;
+export const DEFAULT_BORROW_RATE_BPS = 500;
 
 export class SimulationRouteHandler {
   /**
@@ -38,28 +48,87 @@ export class SimulationRouteHandler {
       body.borrows = [];
     }
 
-    // Input validation and sanitation
-    const collaterals = body.collaterals.map((c: any) => ({
-      asset: String(c.asset || 'XLM'),
-      amount: SecuritySanitizer.sanitizeBigIntString(String(c.amount || '0')),
-      priceUsd: SecuritySanitizer.sanitizePositiveNumber(c.priceUsd, 1.0),
-      liquidationThresholdBps: Math.min(10_000, Math.max(0, parseInt(c.liquidationThresholdBps) || 8000)),
-      collateralFactorBps: Math.min(10_000, Math.max(0, parseInt(c.collateralFactorBps) || 7500)),
-    }));
+    // Input validation and sanitation.
+    //
+    // Numeric parameters distinguish "absent or unparseable" (the documented
+    // default applies, and is reported in `warnings`) from an explicit value.
+    // `0` is an explicit value: `parseInt(x) || default` would turn it into the
+    // default (issues #1214, #1215).
+    const warnings: SimulationWarning[] = [];
 
-    const borrows = body.borrows.map((b: any) => ({
-      asset: String(b.asset || 'USDC'),
-      borrowedAmount: SecuritySanitizer.sanitizeBigIntString(String(b.borrowedAmount || '0')),
-      priceUsd: SecuritySanitizer.sanitizePositiveNumber(b.priceUsd, 1.0),
-      borrowRateBps: Math.min(10_000, Math.max(0, parseInt(b.borrowRateBps) || 500)),
-      accruedInterest: SecuritySanitizer.sanitizeBigIntString(String(b.accruedInterest || '0')),
-      lastAccrualTime: parseInt(b.lastAccrualTime) || 0,
-    }));
+    const collaterals = body.collaterals.map((c: any) => {
+      const asset = String(c.asset || 'XLM');
+      const liq = SecuritySanitizer.sanitizeBps(c.liquidationThresholdBps, DEFAULT_LIQUIDATION_THRESHOLD_BPS);
+      const factor = SecuritySanitizer.sanitizeBps(c.collateralFactorBps, DEFAULT_COLLATERAL_FACTOR_BPS);
+
+      if (liq.defaulted) {
+        warnings.push({
+          code: 'DEFAULT_APPLIED',
+          asset,
+          field: 'liquidationThresholdBps',
+          appliedValue: liq.value,
+          message: `liquidationThresholdBps was missing or invalid for ${asset}; the default ${liq.value} was used`,
+        });
+      } else if (liq.value === 0) {
+        warnings.push({
+          code: 'ZERO_LIQUIDATION_THRESHOLD',
+          asset,
+          field: 'liquidationThresholdBps',
+          message: `${asset} has a liquidation threshold of 0 and contributes nothing to the position's safety margin`,
+        });
+      }
+      if (factor.defaulted) {
+        warnings.push({
+          code: 'DEFAULT_APPLIED',
+          asset,
+          field: 'collateralFactorBps',
+          appliedValue: factor.value,
+          message: `collateralFactorBps was missing or invalid for ${asset}; the default ${factor.value} was used`,
+        });
+      } else if (factor.value === 0) {
+        warnings.push({
+          code: 'ZERO_COLLATERAL_FACTOR',
+          asset,
+          field: 'collateralFactorBps',
+          message: `${asset} has a collateral factor of 0 and adds no borrowing capacity`,
+        });
+      }
+
+      return {
+        asset,
+        amount: SecuritySanitizer.sanitizeBigIntString(String(c.amount || '0')),
+        priceUsd: SecuritySanitizer.sanitizePositiveNumber(c.priceUsd, 1.0),
+        liquidationThresholdBps: liq.value,
+        collateralFactorBps: factor.value,
+      };
+    });
+
+    const borrows = body.borrows.map((b: any) => {
+      const asset = String(b.asset || 'USDC');
+      const rate = SecuritySanitizer.sanitizeBps(b.borrowRateBps, DEFAULT_BORROW_RATE_BPS);
+      if (rate.defaulted) {
+        warnings.push({
+          code: 'DEFAULT_APPLIED',
+          asset,
+          field: 'borrowRateBps',
+          appliedValue: rate.value,
+          message: `borrowRateBps was missing or invalid for ${asset}; the default ${rate.value} was used`,
+        });
+      }
+      return {
+        asset,
+        borrowedAmount: SecuritySanitizer.sanitizeBigIntString(String(b.borrowedAmount || '0')),
+        priceUsd: SecuritySanitizer.sanitizePositiveNumber(b.priceUsd, 1.0),
+        borrowRateBps: rate.value,
+        accruedInterest: SecuritySanitizer.sanitizeBigIntString(String(b.accruedInterest || '0')),
+        lastAccrualTime: SecuritySanitizer.parseIntegerField(b.lastAccrualTime) ?? 0,
+      };
+    });
 
     const priceShocks = Array.isArray(body.priceShocks)
       ? body.priceShocks.map((s: any) => ({
           asset: String(s.asset || ''),
-          shockBps: Math.max(-9999, Math.min(100_000, parseInt(s.shockBps) || 0)),
+          shockBps: SecuritySanitizer.sanitizeBps(s.shockBps, 0, -9999, 100_000).value,
         }))
       : undefined;
 
@@ -78,7 +147,7 @@ export class SimulationRouteHandler {
       const result = SimulationEngine.simulate(request);
       return {
         success: true,
-        data: result,
+        data: warnings.length > 0 ? { ...result, warnings } : result,
         timestamp: Date.now(),
       };
     } catch (err: any) {

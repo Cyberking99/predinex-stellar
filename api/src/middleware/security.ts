@@ -23,6 +23,44 @@ export class SecuritySanitizer {
   }
 
   /**
+   * Reads a caller-supplied integer field, telling "absent or unparseable"
+   * apart from a real value. Returns `undefined` only when the field is missing,
+   * empty, not a finite number, or a string that is not a plain decimal number.
+   * `0` is a value, not an absence.
+   *
+   * Use this instead of `parseInt(x) || fallback`: that idiom treats an explicit
+   * `0` as missing and silently swaps in the fallback (issue #1214).
+   */
+  public static parseIntegerField(value: any): number | undefined {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? Math.trunc(value) : undefined;
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!/^[+-]?\d+(\.\d+)?$/.test(trimmed)) return undefined;
+      const parsed = Number(trimmed);
+      return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * Basis-point field clamped to [min, max]. `defaulted` is true only when the
+   * caller supplied nothing usable, so callers can flag the substitution instead
+   * of hiding it. An explicit `0` is kept as `0`.
+   */
+  public static sanitizeBps(
+    value: any,
+    defaultValue: number,
+    min: number = 0,
+    max: number = 10_000
+  ): { value: number; defaulted: boolean } {
+    const parsed = SecuritySanitizer.parseIntegerField(value);
+    const raw = parsed === undefined ? defaultValue : parsed;
+    return { value: Math.min(max, Math.max(min, raw)), defaulted: parsed === undefined };
+  }
+
+  /**
    * Sanitizes BigInt strings (ensures non-negative decimal string, prevents overflow/injection).
    */
   public static sanitizeBigIntString(value: any, fallback: string = '0'): string {

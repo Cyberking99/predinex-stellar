@@ -9,6 +9,8 @@
  */
 
 export * from './types/index.js';
+export * from './config/cors.js';
+export * from './app.js';
 export * from './middleware/rate-limit.js';
 export * from './middleware/auth.js';
 export * from './middleware/security.js';
@@ -25,4 +27,3 @@ export * from './routes/emergency.js';
 export * from './routes/gasEstimate.js';
 export * from './routes/referral.js';
 export * from './config/swagger.js';
-export { createApp, API_VERSION } from './app.js';

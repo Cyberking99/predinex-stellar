@@ -1187,3 +1187,33 @@ fn test_assess_risk_uses_real_pool_data() {
         );
     });
 }
+
+#[test]
+fn test_liquid_balance_and_unlock_time_reads_positions() {
+    let env = Env::default();
+    let lender = Address::generate(&env);
+    let contract_id = test_contract(&env);
+    let now = 2_000_000u64;
+    env.ledger().set_timestamp(now);
+
+    env.as_contract(&contract_id, || {
+        // Pool 1: open and expires at now + 500_000
+        setup_test_pool(&env, 1, 50_000_000, 50_000_000, 10, now + 500_000);
+        // Pool 2: open and expires at now + 1_000_000
+        setup_test_pool(&env, 2, 20_000_000, 20_000_000, 5, now + 1_000_000);
+
+        setup_user_bet(&env, 1, &lender, 250_000, 250_000); // 500_000 total
+        setup_user_bet(&env, 2, &lender, 100_000, 200_000); // 300_000 total
+
+        let projection = BudgetPlanner::project_liquidity(&env, &lender, PlanningHorizon::MediumTerm).unwrap();
+
+        // Non-zero liquid balance derived from user's bets in open pools
+        assert_eq!(projection.current_liquid, 800_000);
+        assert!(projection.current_liquid > 0);
+
+        // Earliest unlock time is pool 1's expiry
+        assert_eq!(projection.locked_until_timestamp, now + 500_000);
+        assert!(projection.locked_until_timestamp > 0);
+    });
+}
+

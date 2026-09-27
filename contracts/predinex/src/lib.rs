@@ -13,6 +13,12 @@ mod benchmark_tests;
 mod benchmarks;
 mod bet_management_tests;
 mod budget_planner;
+// #1234 — The planner types are re-exported at the crate root so they are part
+// of the contract's public interface. While the module was gated behind
+// `#![cfg(test)]` these were unreachable from any build of the contract.
+pub use budget_planner::{
+    AllocationStrategy, BudgetPlan, BudgetPlanner, PortfolioMetrics, RiskTolerance,
+};
 mod concurrent_tests;
 mod create_pool_validation_tests;
 mod creator_deadline_claim_tests;
@@ -1064,6 +1070,12 @@ pub enum DataKey {
     ReferralBalance(Address),
     /// #420 — Total volume generated through referrals across all referrers.
     TotalReferralVolume,
+    /// #1232 — Cumulative amount already paid out of a multi-asset pool in a
+    /// specific token (in that token's own units). Recorded so the final-claim
+    /// dust sweep can bound itself to the settling pool's own remainder instead
+    /// of reading the contract-wide balance, which includes every other pool's
+    /// escrow.
+    PoolTokenPaidOut(u32, Address),
     /// Cumulative total winnings claimed by a user across all pools.
     UserTotalClaimed(Address),
     /// Claim history entries for a user (capped ring buffer).
@@ -5017,6 +5029,8 @@ impl PredinexContract {
             .get::<_, UserBet>(&DataKey::UserBet(pool_id, user.clone()))
             .ok_or(ContractError::NoBetFound)?;
 
+        // Read-only here: the refund removes the position outright below, so
+        // there is no reduced per-outcome balance left to persist.
         let mut outcome_bets = Self::read_user_outcome_bets(&env, pool_id, user.clone(), &user_bet);
         while outcome_bets.len() < outcomes.len() {
             outcome_bets.push_back(0);
@@ -5523,6 +5537,15 @@ impl PredinexContract {
         // this pool so winner claims deduct exactly the fee fixed here.
         let fee_bps = Self::resolve_fee_bps_for_volume(env, total_pool_volume);
         let fee_amount = total_pool_volume
+        // #1233 — Refuse to resolve a market nobody backed. Only the index was
+        // range-checked, so a pool whose only bettor staked outcome 0 could be
+        // settled to outcome 1: `claim_winnings` then returned `NoWinningBets`
+        // for everyone, every exit path requires a non-settled status, and a
+        // settlement fee was recorded that nobody could ever collect. The
+        // creator could lock every bettor's deposit permanently.
+        if winning_side_total <= 0 {
+            return Err(ContractError::NoWinningBets);
+        }
             .checked_mul(fee_bps as i128)
             .ok_or(ContractError::PoolTotalOverflow)?
             / 10000;
@@ -5827,18 +5850,34 @@ impl PredinexContract {
             return Err(ContractError::MultiAssetClaimRequired);
         }
 
-        let pool = env
+        let mut pool = env
             .storage()
             .persistent()
             .get::<_, Pool>(&DataKey::Pool(pool_id))
             .ok_or(ContractError::PoolNotFound)?;
 
-        // Only open (unsettled) pools qualify — any terminal or frozen state is rejected.
-        if pool.status != PoolStatus::Open {
+        // #1231 — Settlement and expiry refund are mutually exclusive by status.
+        //
+        // `settle_pool` requires `Open` and `claim_expired` used to run in the
+        // very same ledger second it became legal, so a loser could refund at
+        // `expiry + 1` and the creator could still settle afterwards. The refund
+        // moved tokens out without touching the outcome totals settlement reads,
+        // so the winner's payout was computed from a stale (larger) total and
+        // reverted with a bare shortfall.
+        //
+        // Both halves are fixed here: the first expiry refund closes settlement
+        // by moving the pool to `Voided` (already meaning "every participant may
+        // claim a full refund"), and the refund now decrements the same
+        // `PoolOutcomeTotals` / `total_a` / `total_b` that `cancel_bet` and
+        // settlement use. `Voided` is accepted below so the remaining losers can
+        // still be refunded; a pool only reaches that state after expiry has
+        // passed, so this cannot be used to short-circuit a live pool.
+        if pool.status != PoolStatus::Open && pool.status != PoolStatus::Voided {
             return Err(ContractError::PoolNotOpen);
         }
 
-        // Pool must have actually expired.
+        // Pool must have actually expired. Checked for `Voided` too, so an
+        // expiry refund cannot be used to drain a pool that is still open.
         if env.ledger().timestamp() <= pool.expiry {
             return Err(ContractError::PoolNotExpired);
         }
@@ -5854,12 +5893,73 @@ impl PredinexContract {
             return Err(ContractError::NothingToRefund);
         }
 
-        let token_address = env
-            .storage()
+        // #1231 — Mirror `cancel_bet`: the refunded stake has to leave the
+        // outcome totals, or settlement later reads a total the contract no
+        // longer holds. The refund closes the user's whole position, so every
+        // outcome they staked on is debited in full from `PoolOutcomeTotals`,
+        // with `total_a`/`total_b` mirrored for the first two outcomes.
+        //
+        // `read_user_outcome_bets` carries the legacy fallback (positions
+        // recorded before per-outcome tracking fall back to `amount_a`/
+        // `amount_b`), so older pools are debited correctly too.
+        let outcomes = Self::read_outcomes(&env, pool_id, &pool);
+        let mut outcome_bets = Self::read_user_outcome_bets(&env, pool_id, user.clone(), &user_bet);
+        while outcome_bets.len() < outcomes.len() {
+            outcome_bets.push_back(0);
+        }
+        let mut totals = Self::read_outcome_totals(&env, pool_id, &pool);
+        for i in 0..outcome_bets.len() {
+            let outcome = i as u32;
+            let staked = outcome_bets.get(i).unwrap_or(0);
+            if staked <= 0 {
+                continue;
+            }
+            let current = totals.get(i).ok_or(ContractError::InvalidOutcome)?;
+            totals.set(
+                i,
+                current
+                    .checked_sub(staked)
+                    .ok_or(ContractError::InvalidBetAmount)?,
+            );
+            if outcome == 0 {
+                pool.total_a = pool
+                    .total_a
+                    .checked_sub(staked)
+                    .ok_or(ContractError::InvalidBetAmount)?;
+            } else if outcome == 1 {
+                pool.total_b = pool
+                    .total_b
+                    .checked_sub(staked)
+                    .ok_or(ContractError::InvalidBetAmount)?;
+            }
+        }
+
+        // #1231 — Close settlement before the money moves. `settle_pool` only
+        // accepts `Open`, so flipping to `Voided` here makes the two paths
+        // mutually exclusive: once any bettor is expiry-refunded, the market
+        // can no longer be resolved and every remaining participant is refunded
+        // in full rather than one side being paid from totals the contract no
+        // longer holds.
+        if pool.status == PoolStatus::Open {
+            pool.status = PoolStatus::Voided;
+        }
+
+        // Persist the decremented pool and outcome totals so settlement and
+        // subsequent refunds both read the post-refund figures.
+        env.storage().persistent().set(&DataKey::Pool(pool_id), &pool);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Pool(pool_id),
+            POOL_BUMP_THRESHOLD,
+            POOL_BUMP_TARGET,
+        );
+        env.storage()
             .persistent()
-            .get::<_, Address>(&DataKey::Token)
-            .ok_or(ContractError::NotInitialized)?;
-        let token_client = token::Client::new(&env, &token_address);
+            .set(&DataKey::PoolOutcomeTotals(pool_id), &totals);
+        env.storage().persistent().extend_ttl(
+            &DataKey::PoolOutcomeTotals(pool_id),
+            POOL_BUMP_THRESHOLD,
+            POOL_BUMP_TARGET,
+        );
 
         // Transfer original stake back — no fee deducted.
         token_client.transfer(&env.current_contract_address(), &user, &refund);
@@ -6225,6 +6325,16 @@ impl PredinexContract {
         let prev_total: i128 = env.storage().persistent().get(&total_key).unwrap_or(0);
         let next_total = prev_total
             .checked_add(winnings)
+        // #1231 — Surface a shortfall as a typed error instead of letting the
+        // transfer revert. `compute_winnings` is derived from recorded totals;
+        // if those ever exceed what the contract actually holds (a refund path
+        // that moved tokens without decrementing them, a mis-scaled pool), the
+        // caller gets `BalanceShortfall` naming the cause rather than a bare
+        // host revert that is indistinguishable from any other failure.
+        let available = token_client.balance(&env.current_contract_address());
+        if available < winnings {
+            return Err(ContractError::BalanceShortfall);
+        }
             .ok_or(ContractError::PoolTotalOverflow)?;
         env.storage().persistent().set(&total_key, &next_total);
 
@@ -7150,6 +7260,48 @@ impl PredinexContract {
 
     /// Return pool data and extend its TTL on every read so active pools stay
     /// accessible throughout their lifecycle. (#189)
+    /// #1234 — Build a lender budget plan.
+    ///
+    /// Read-only: derives a capital allocation across eligible pools from the
+    /// lender's current exposure. Previously the planner was compiled out of
+    /// every non-test build, so this was not callable at all.
+    pub fn budget_plan(
+        env: Env,
+        lender: Address,
+        total_budget: i128,
+        strategy: AllocationStrategy,
+        risk_tolerance: RiskTolerance,
+        reserve_pct: u32,
+    ) -> Result<BudgetPlan, ContractError> {
+        if !Self::is_initialized(&env) {
+            panic_with_error!(&env, ContractError::NotInitialized);
+        }
+        Self::require_not_paused(&env)?;
+        BudgetPlanner::create_plan(
+            &env,
+            &lender,
+            total_budget,
+            strategy,
+            risk_tolerance,
+            reserve_pct,
+        )
+    }
+
+    /// #1234 — Current portfolio performance for a lender.
+    ///
+    /// Read-only, like `budget_plan`; kept alongside it so the planner's
+    /// metrics are reachable from a real build too.
+    pub fn lender_portfolio_metrics(
+        env: Env,
+        lender: Address,
+    ) -> Result<PortfolioMetrics, ContractError> {
+        if !Self::is_initialized(&env) {
+            panic_with_error!(&env, ContractError::NotInitialized);
+        }
+        Self::require_not_paused(&env)?;
+        BudgetPlanner::get_portfolio_metrics(&env, &lender)
+    }
+
     pub fn get_pool(env: Env, pool_id: u32) -> Option<Pool> {
         if !Self::is_initialized(&env) {
             panic_with_error!(&env, ContractError::NotInitialized);
@@ -9527,15 +9679,38 @@ impl PredinexContract {
                 if net_t <= 0 {
                     continue;
                 }
-                let token_bal =
-                    token::Client::new(&env, &tok).balance(&env.current_contract_address());
-                let dust = if token_bal > fee_t {
-                    token_bal
-                        .checked_sub(fee_t)
-                        .ok_or(ContractError::PoolTotalOverflow)?
-                } else {
-                    0
+                // #1232 — The dust is this pool's own unspent remainder, never
+                // the contract-wide balance. `net_t` is what the pool was
+                // deposited and owes; `paid_t` is what it has already paid out
+                // of it. The difference is bounded by the pool's own recorded
+                // numbers, so the sweep cannot reach another pool's escrow,
+                // unclaimed single-asset stakes, LP principal or treasury
+                // reserve — all of which the contract balance also contained.
+                let paid_t: i128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::PoolTokenPaidOut(pool_id, tok.clone()))
+                    .unwrap_or(0);
+                let dust = match net_t.checked_sub(paid_t) {
+                    Ok(remainder) if remainder > 0 => remainder,
+                    // Over-paid, or nothing left: there is no dust to collect.
+                    _ => 0,
                 };
+                // #1232 — Record what this pool has paid out in this token. The
+                // final-claim dust sweep subtracts this to find the pool's own
+                // remainder; without it the sweep has no way to tell its dust
+                // from another pool's escrow.
+                let paid_key = DataKey::PoolTokenPaidOut(pool_id, tok.clone());
+                let paid_prev: i128 = env.storage().persistent().get(&paid_key).unwrap_or(0);
+                let paid_next = paid_prev
+                    .checked_add(payout_t)
+                    .ok_or(ContractError::PoolTotalOverflow)?;
+                env.storage().persistent().set(&paid_key, &paid_next);
+                env.storage().persistent().extend_ttl(
+                    &paid_key,
+                    POOL_BUMP_THRESHOLD,
+                    POOL_BUMP_TARGET,
+                );
                 if dust > 0 {
                     token::Client::new(&env, &tok).transfer(
                         &env.current_contract_address(),
@@ -9594,6 +9769,15 @@ impl PredinexContract {
 
         let history_key = DataKey::UserClaimHistory(analytics_user.clone());
         let mut history: Vec<UserClaimEntry> = env
+                    // Only sweep what the pool itself still holds for this
+                    // token, so the recorded deposit is reduced in step.
+                    let on_hand = token::Client::new(&env, &tok)
+                        .balance(&env.current_contract_address());
+                    let sweepable = if dust <= on_hand { dust } else { on_hand };
+                    if sweepable <= 0 {
+                        continue;
+                    }
+                    let dust = sweepable;
             .storage()
             .persistent()
             .get(&history_key)
@@ -9611,6 +9795,34 @@ impl PredinexContract {
         }
         env.storage().persistent().set(&history_key, &history);
         env.storage()
+
+                    // #1232 — Reflect the sweep in the pool's own ledger, not
+                    // only the treasury's. The recorded deposit and the
+                    // paid-out total are both advanced by the swept amount, so
+                    // the pool's books balance after the sweep and a later
+                    // accounting query cannot still show the dust as
+                    // outstanding. Crediting the treasury alone reported the
+                    // transfer as protocol revenue with no matching pool entry.
+                    let paid_key = DataKey::PoolTokenPaidOut(pool_id, tok.clone());
+                    let paid_after: i128 = paid_t
+                        .checked_add(dust)
+                        .ok_or(ContractError::PoolTotalOverflow)?;
+                    env.storage().persistent().set(&paid_key, &paid_after);
+                    env.storage().persistent().extend_ttl(
+                        &paid_key,
+                        POOL_BUMP_THRESHOLD,
+                        POOL_BUMP_TARGET,
+                    );
+                    let deposit_key = DataKey::PoolTokenDeposit(pool_id, tok.clone());
+                    let deposit_after = deposit
+                        .checked_sub(dust)
+                        .ok_or(ContractError::PoolTotalOverflow)?;
+                    env.storage().persistent().set(&deposit_key, &deposit_after);
+                    env.storage().persistent().extend_ttl(
+                        &deposit_key,
+                        POOL_BUMP_THRESHOLD,
+                        POOL_BUMP_TARGET,
+                    );
             .persistent()
             .extend_ttl(&history_key, POOL_BUMP_THRESHOLD, POOL_BUMP_TARGET);
         env.storage()

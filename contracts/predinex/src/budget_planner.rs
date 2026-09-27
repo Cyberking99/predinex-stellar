@@ -26,9 +26,10 @@
 //!
 //! Issue #1110: Build lending protocol budget planner for lenders
 
-#![cfg(test)]
-extern crate std;
-
+// #1234 — This module used to be gated behind `#![cfg(test)]`, which meant the
+// planner was stripped from every real build: `soroban build` never compiled it,
+// no `BudgetPlan` appeared in the contract spec, and no caller could reach it.
+// Only the `test` section at the bottom of this file is test-only now.
 use super::*;
 use soroban_sdk::{contracttype, Address, Env};
 
@@ -956,8 +957,15 @@ impl BudgetPlanner {
 // ============================================================================
 // Tests
 // ============================================================================
+//
+// #1234 — Only this section is test-only. The planner itself is compiled into
+// the contract; its tests are not shipped.
 
-use soroban_sdk::testutils::{Address as _, Ledger};
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger};
+
 
 /// Helper to create a pool directly in storage for testing.
 /// Must be called inside `env.as_contract(contract_id, || { ... })`.
@@ -1469,4 +1477,5 @@ fn test_no_checked_arithmetic_is_swallowed_in_the_planner() {
             );
         }
     }
+}
 }

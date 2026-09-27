@@ -13,6 +13,12 @@ mod benchmark_tests;
 mod benchmarks;
 mod bet_management_tests;
 mod budget_planner;
+// #1234 — The planner types are re-exported at the crate root so they are part
+// of the contract's public interface. While the module was gated behind
+// `#![cfg(test)]` these were unreachable from any build of the contract.
+pub use budget_planner::{
+    AllocationStrategy, BudgetPlan, BudgetPlanner, PortfolioMetrics, RiskTolerance,
+};
 mod concurrent_tests;
 mod create_pool_validation_tests;
 mod creator_deadline_claim_tests;
@@ -5023,6 +5029,8 @@ impl PredinexContract {
             .get::<_, UserBet>(&DataKey::UserBet(pool_id, user.clone()))
             .ok_or(ContractError::NoBetFound)?;
 
+        // Read-only here: the refund removes the position outright below, so
+        // there is no reduced per-outcome balance left to persist.
         let mut outcome_bets = Self::read_user_outcome_bets(&env, pool_id, user.clone(), &user_bet);
         while outcome_bets.len() < outcomes.len() {
             outcome_bets.push_back(0);
@@ -5924,7 +5932,6 @@ impl PredinexContract {
                     .checked_sub(staked)
                     .ok_or(ContractError::InvalidBetAmount)?;
             }
-            outcome_bets.set(i, 0);
         }
 
         // #1231 — Close settlement before the money moves. `settle_pool` only
@@ -7253,6 +7260,48 @@ impl PredinexContract {
 
     /// Return pool data and extend its TTL on every read so active pools stay
     /// accessible throughout their lifecycle. (#189)
+    /// #1234 — Build a lender budget plan.
+    ///
+    /// Read-only: derives a capital allocation across eligible pools from the
+    /// lender's current exposure. Previously the planner was compiled out of
+    /// every non-test build, so this was not callable at all.
+    pub fn budget_plan(
+        env: Env,
+        lender: Address,
+        total_budget: i128,
+        strategy: AllocationStrategy,
+        risk_tolerance: RiskTolerance,
+        reserve_pct: u32,
+    ) -> Result<BudgetPlan, ContractError> {
+        if !Self::is_initialized(&env) {
+            panic_with_error!(&env, ContractError::NotInitialized);
+        }
+        Self::require_not_paused(&env)?;
+        BudgetPlanner::create_plan(
+            &env,
+            &lender,
+            total_budget,
+            strategy,
+            risk_tolerance,
+            reserve_pct,
+        )
+    }
+
+    /// #1234 — Current portfolio performance for a lender.
+    ///
+    /// Read-only, like `budget_plan`; kept alongside it so the planner's
+    /// metrics are reachable from a real build too.
+    pub fn lender_portfolio_metrics(
+        env: Env,
+        lender: Address,
+    ) -> Result<PortfolioMetrics, ContractError> {
+        if !Self::is_initialized(&env) {
+            panic_with_error!(&env, ContractError::NotInitialized);
+        }
+        Self::require_not_paused(&env)?;
+        BudgetPlanner::get_portfolio_metrics(&env, &lender)
+    }
+
     pub fn get_pool(env: Env, pool_id: u32) -> Option<Pool> {
         if !Self::is_initialized(&env) {
             panic_with_error!(&env, ContractError::NotInitialized);

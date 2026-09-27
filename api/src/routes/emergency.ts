@@ -6,7 +6,22 @@
  * with comprehensive security, rate limiting, and audit logging.
  */
 
-import { Contract, SorobanRpc, xdr, Address, Keypair } from 'stellar-sdk';
+import {
+  Address,
+  Contract,
+  Keypair,
+  nativeToScVal,
+  scValToNative,
+  SorobanRpc,
+  TransactionBuilder,
+  xdr,
+} from 'stellar-sdk';
+import { Router, Request, Response } from 'express';
+import { authMiddleware, requireAdmin } from '../middleware/auth.js';
+import {
+  rateLimitMiddleware,
+  strictRateLimitMiddleware,
+} from '../middleware/rate-limit.js';
 
 /**
  * Emergency status enum matching contract implementation
@@ -119,82 +134,176 @@ export class EmergencyWithdrawalService {
   }
 
   /**
-   * Initialize the emergency withdrawal system
+   * Build, simulate, sign with `adminKeypair` and submit a real Soroban
+   * transaction. Returns the on-chain hash — never a fabricated value.
+   * Any failure (simulation error, submission error, missing hash) throws
+   * so callers receive `{ success: false }` instead of a false success
+   * (see #1195).
+   */
+  private async submitTransaction(
+    adminKeypair: Keypair,
+    method: string,
+    args: xdr.ScVal[]
+  ): Promise<{ txHash: string; returnValue?: unknown }> {
+    if (!adminKeypair) {
+      throw new Error('Admin keypair is required');
+    }
+    if (!this.contractId) {
+      throw new Error('Contract ID is not configured');
+    }
+    const adminPublicKey = adminKeypair.publicKey();
+    // Validate address format early; throws on malformed keys.
+    new Address(adminPublicKey);
+
+    const sourceAccount = await this.rpcServer.getAccount(adminPublicKey);
+    const contract = new Contract(this.contractId);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '1000',
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(contract.call(method, ...args))
+      .setTimeout(60)
+      .build();
+
+    const simulation: any = await this.rpcServer.simulateTransaction(tx);
+    const api: any = (SorobanRpc as any)?.Api;
+    const isSimError =
+      typeof api?.isSimulationError === 'function'
+        ? api.isSimulationError(simulation)
+        : Boolean(simulation?.error);
+    if (isSimError || simulation?.error) {
+      throw new Error(
+        `Simulation failed for ${method}: ${simulation?.error || 'unknown error'}`
+      );
+    }
+    const isSimSuccess =
+      typeof api?.isSimulationSuccess === 'function'
+        ? api.isSimulationSuccess(simulation)
+        : true;
+    if (!isSimSuccess) {
+      throw new Error(`Simulation returned unexpected result for ${method}`);
+    }
+
+    let assembled: any = tx;
+    const assembler = (SorobanRpc as any)?.assembleTransaction;
+    if (typeof assembler === 'function') {
+      assembled = assembler(tx, simulation).build();
+    }
+    assembled.sign(adminKeypair);
+
+    const submission: any = await this.rpcServer.sendTransaction(assembled);
+    if (!submission || submission.status === 'ERROR') {
+      throw new Error(
+        `Transaction submission failed for ${method}: ${JSON.stringify(
+          submission?.errorResult ?? submission?.status ?? 'unknown'
+        )}`
+      );
+    }
+    const txHash = submission.hash as string;
+    if (!txHash) {
+      throw new Error(
+        `Transaction submission returned no hash for ${method}`
+      );
+    }
+
+    let returnValue: unknown;
+    try {
+      const retval = simulation?.result?.retval;
+      if (retval) {
+        returnValue = scValToNative(retval);
+      }
+    } catch {
+      // Ignore decode errors; hash is still the source of truth.
+    }
+    return { txHash, returnValue };
+  }
+
+  /**
+   * Initialize the emergency withdrawal system.
+   * Submits a real `initialize` transaction signed by the admin keypair.
    */
   async initialize(
     adminKeypair: Keypair,
     maxWithdrawalAmount: string
   ): Promise<{ success: boolean; txHash?: string; error?: string }> {
     try {
-      const contract = new Contract(this.contractId);
-      
-      // Build transaction
-      const account = await this.rpcServer.getAccount(adminKeypair.publicKey());
-      
-      // In production, this would build and submit the actual transaction
-      // For now, return success with mock data
-      
-      return {
-        success: true,
-        txHash: 'mock_tx_hash_init',
-      };
+      if (!maxWithdrawalAmount || BigInt(maxWithdrawalAmount) <= 0) {
+        return { success: false, error: 'Invalid max withdrawal amount' };
+      }
+      const adminScVal = new Address(adminKeypair.publicKey()).toScVal();
+      const amountScVal = nativeToScVal(BigInt(maxWithdrawalAmount), {
+        type: 'i128',
+      } as any);
+      const { txHash } = await this.submitTransaction(adminKeypair, 'initialize', [
+        adminScVal,
+        amountScVal,
+      ]);
+      return { success: true, txHash };
     } catch (error: any) {
       return {
         success: false,
-        error: error.message,
+        error: error?.message || String(error),
       };
     }
   }
 
   /**
-   * Activate emergency mode
+   * Activate emergency mode via a real on-chain transaction.
+   * The admin keypair signs; the returned hash exists on chain.
    */
   async activateEmergency(
     adminKeypair: Keypair,
     reason: string
   ): Promise<{ success: boolean; txHash?: string; error?: string }> {
     try {
-      const contract = new Contract(this.contractId);
-      
-      // Validate admin authority
-      // Build and submit transaction
-      
-      return {
-        success: true,
-        txHash: 'mock_tx_hash_activate',
-      };
+      if (!reason || reason.trim().length === 0) {
+        return { success: false, error: 'Reason is required' };
+      }
+      const adminScVal = new Address(adminKeypair.publicKey()).toScVal();
+      const reasonScVal = nativeToScVal(reason, { type: 'string' } as any);
+      const { txHash } = await this.submitTransaction(
+        adminKeypair,
+        'activate_emergency',
+        [adminScVal, reasonScVal]
+      );
+      return { success: true, txHash };
     } catch (error: any) {
       return {
         success: false,
-        error: error.message,
+        error: error?.message || String(error),
       };
     }
   }
 
   /**
-   * Deactivate emergency mode
+   * Deactivate emergency mode via a real on-chain transaction.
    */
   async deactivateEmergency(
     adminKeypair: Keypair,
     reason: string
   ): Promise<{ success: boolean; txHash?: string; error?: string }> {
     try {
-      const contract = new Contract(this.contractId);
-      
-      return {
-        success: true,
-        txHash: 'mock_tx_hash_deactivate',
-      };
+      if (!reason || reason.trim().length === 0) {
+        return { success: false, error: 'Reason is required' };
+      }
+      const adminScVal = new Address(adminKeypair.publicKey()).toScVal();
+      const reasonScVal = nativeToScVal(reason, { type: 'string' } as any);
+      const { txHash } = await this.submitTransaction(
+        adminKeypair,
+        'deactivate_emergency',
+        [adminScVal, reasonScVal]
+      );
+      return { success: true, txHash };
     } catch (error: any) {
       return {
         success: false,
-        error: error.message,
+        error: error?.message || String(error),
       };
     }
   }
 
   /**
-   * Create an emergency withdrawal request
+   * Create an emergency withdrawal request via a real on-chain transaction.
    */
   async requestWithdrawal(
     adminKeypair: Keypair,
@@ -222,13 +331,11 @@ export class EmergencyWithdrawalService {
         return { success: false, error: 'Invalid token address' };
       }
 
-      // Check emergency status
-      const config = await this.getConfig();
-      if (config.status === EmergencyStatus.NORMAL) {
-        return { success: false, error: 'Emergency mode not active' };
+      if (!reason || reason.trim().length === 0) {
+        return { success: false, error: 'Reason is required' };
       }
 
-      // Check rate limits before creating request
+      // Client-side rate-limit pre-check; on-chain limits remain authoritative.
       const rateLimitCheck = await this.checkRateLimit(amount);
       if (!rateLimitCheck.allowed) {
         return {
@@ -237,114 +344,106 @@ export class EmergencyWithdrawalService {
         };
       }
 
-      // Build and submit transaction
-      const contract = new Contract(this.contractId);
-      
-      // Mock request ID for demonstration
-      const requestId = Date.now().toString();
+      const adminScVal = new Address(adminKeypair.publicKey()).toScVal();
+      const recipientScVal = new Address(recipient).toScVal();
+      const amountScVal = nativeToScVal(BigInt(amount), {
+        type: 'i128',
+      } as any);
+      const tokenScVal = new Address(token).toScVal();
+      const reasonScVal = nativeToScVal(reason, { type: 'string' } as any);
 
-      return {
-        success: true,
-        requestId,
-        txHash: 'mock_tx_hash_request',
-      };
+      const { txHash, returnValue } = await this.submitTransaction(
+        adminKeypair,
+        'request_withdrawal',
+        [adminScVal, recipientScVal, amountScVal, tokenScVal, reasonScVal]
+      );
+      const requestId =
+        returnValue !== undefined && returnValue !== null
+          ? String(returnValue)
+          : undefined;
+      return { success: true, requestId, txHash };
     } catch (error: any) {
       return {
         success: false,
-        error: error.message,
+        error: error?.message || String(error),
       };
     }
   }
 
   /**
-   * Approve a withdrawal request
+   * Approve a withdrawal request via a real on-chain transaction.
+   * Existence and signature checks are enforced by the contract; any
+   * submission failure returns success:false (never a mock hash).
    */
   async approveWithdrawal(
     adminKeypair: Keypair,
     requestId: string
   ): Promise<{ success: boolean; txHash?: string; error?: string }> {
     try {
-      // Validate request exists
-      const request = await this.getRequest(requestId);
-      if (!request) {
-        return { success: false, error: 'Request not found' };
+      if (!requestId || requestId.trim().length === 0) {
+        return { success: false, error: 'Request ID is required' };
+      }
+      let requestIdNum: number;
+      try {
+        requestIdNum = Number(requestId);
+        if (!Number.isInteger(requestIdNum) || requestIdNum < 0) {
+          return { success: false, error: 'Invalid request ID' };
+        }
+      } catch {
+        return { success: false, error: 'Invalid request ID' };
       }
 
-      if (request.status !== WithdrawalRequestStatus.PENDING) {
-        return { success: false, error: 'Request not in pending status' };
-      }
-
-      // Check if admin already signed
-      if (request.signatures.includes(adminKeypair.publicKey())) {
-        return { success: false, error: 'Already signed by this admin' };
-      }
-
-      const contract = new Contract(this.contractId);
-      
-      return {
-        success: true,
-        txHash: 'mock_tx_hash_approve',
-      };
+      const adminScVal = new Address(adminKeypair.publicKey()).toScVal();
+      const idScVal = nativeToScVal(requestIdNum, { type: 'u64' } as any);
+      const { txHash } = await this.submitTransaction(
+        adminKeypair,
+        'approve_withdrawal',
+        [adminScVal, idScVal]
+      );
+      return { success: true, txHash };
     } catch (error: any) {
       return {
         success: false,
-        error: error.message,
+        error: error?.message || String(error),
       };
     }
   }
 
   /**
-   * Execute an approved withdrawal request
+   * Execute an approved withdrawal request via a real on-chain transaction.
+   * Timelock and rate limits are enforced by the contract at execution time.
    */
   async executeWithdrawal(
     adminKeypair: Keypair,
     requestId: string
   ): Promise<{ success: boolean; txHash?: string; error?: string }> {
     try {
-      const request = await this.getRequest(requestId);
-      if (!request) {
-        return { success: false, error: 'Request not found' };
+      if (!requestId || requestId.trim().length === 0) {
+        return { success: false, error: 'Request ID is required' };
+      }
+      const requestIdNum = Number(requestId);
+      if (!Number.isInteger(requestIdNum) || requestIdNum < 0) {
+        return { success: false, error: 'Invalid request ID' };
       }
 
-      if (request.status !== WithdrawalRequestStatus.APPROVED) {
-        return { success: false, error: 'Request not approved' };
-      }
-
-      // Check if timelock has elapsed
-      const now = Math.floor(Date.now() / 1000);
-      if (now < request.executableAt) {
-        const remainingTime = request.executableAt - now;
-        return {
-          success: false,
-          error: `Timelock not expired. Wait ${remainingTime} seconds.`,
-        };
-      }
-
-      // Re-check rate limits
-      const rateLimitCheck = await this.checkRateLimit(request.amount);
-      if (!rateLimitCheck.allowed) {
-        return {
-          success: false,
-          error: `Rate limit exceeded at execution time. ${rateLimitCheck.message}`,
-        };
-      }
-
-      const contract = new Contract(this.contractId);
-      
-      return {
-        success: true,
-        txHash: 'mock_tx_hash_execute',
-      };
+      const executorScVal = new Address(adminKeypair.publicKey()).toScVal();
+      const idScVal = nativeToScVal(requestIdNum, { type: 'u64' } as any);
+      const { txHash } = await this.submitTransaction(
+        adminKeypair,
+        'execute_withdrawal',
+        [executorScVal, idScVal]
+      );
+      return { success: true, txHash };
     } catch (error: any) {
       return {
         success: false,
-        error: error.message,
+        error: error?.message || String(error),
       };
     }
   }
 
   /**
-   * Cancel a withdrawal request
+   * Cancel a withdrawal request via a real on-chain transaction.
    */
   async cancelWithdrawal(
     adminKeypair: Keypair,
@@ -352,31 +451,36 @@ export class EmergencyWithdrawalService {
     reason: string
   ): Promise<{ success: boolean; txHash?: string; error?: string }> {
     try {
-      const request = await this.getRequest(requestId);
-      if (!request) {
-        return { success: false, error: 'Request not found' };
+      if (!requestId || requestId.trim().length === 0) {
+        return { success: false, error: 'Request ID is required' };
+      }
+      const requestIdNum = Number(requestId);
+      if (!Number.isInteger(requestIdNum) || requestIdNum < 0) {
+        return { success: false, error: 'Invalid request ID' };
+      }
+      if (!reason || reason.trim().length === 0) {
+        return { success: false, error: 'Reason is required' };
       }
 
-      if (request.status === WithdrawalRequestStatus.EXECUTED) {
-        return { success: false, error: 'Cannot cancel executed request' };
-      }
-
-      const contract = new Contract(this.contractId);
-      
-      return {
-        success: true,
-        txHash: 'mock_tx_hash_cancel',
-      };
+      const adminScVal = new Address(adminKeypair.publicKey()).toScVal();
+      const idScVal = nativeToScVal(requestIdNum, { type: 'u64' } as any);
+      const reasonScVal = nativeToScVal(reason, { type: 'string' } as any);
+      const { txHash } = await this.submitTransaction(
+        adminKeypair,
+        'cancel_withdrawal',
+        [adminScVal, idScVal, reasonScVal]
+      );
+      return { success: true, txHash };
     } catch (error: any) {
       return {
         success: false,
-        error: error.message,
+        error: error?.message || String(error),
       };
     }
   }
 
   /**
-   * Add a secondary admin
+   * Add a secondary admin via a real on-chain transaction.
    */
   async addAdmin(
     primaryAdminKeypair: Keypair,
@@ -387,22 +491,27 @@ export class EmergencyWithdrawalService {
         return { success: false, error: 'Invalid admin address' };
       }
 
-      const contract = new Contract(this.contractId);
-      
-      return {
-        success: true,
-        txHash: 'mock_tx_hash_add_admin',
-      };
+      const primaryScVal = new Address(
+        primaryAdminKeypair.publicKey()
+      ).toScVal();
+      const newAdminScVal = new Address(newAdminAddress).toScVal();
+      const { txHash } = await this.submitTransaction(
+        primaryAdminKeypair,
+        'add_admin',
+        [primaryScVal, newAdminScVal]
+      );
+      return { success: true, txHash };
     } catch (error: any) {
       return {
         success: false,
-        error: error.message,
+        error: error?.message || String(error),
       };
     }
   }
 
   /**
-   * Update emergency configuration
+   * Update emergency configuration via a real on-chain transaction.
+   * Unset fields are passed as None so the contract keeps existing values.
    */
   async updateConfig(
     adminKeypair: Keypair,
@@ -413,22 +522,40 @@ export class EmergencyWithdrawalService {
     }
   ): Promise<{ success: boolean; txHash?: string; error?: string }> {
     try {
-      const contract = new Contract(this.contractId);
-      
-      return {
-        success: true,
-        txHash: 'mock_tx_hash_update_config',
-      };
+      const adminScVal = new Address(adminKeypair.publicKey()).toScVal();
+      const maxAmountScVal =
+        updates.maxWithdrawalAmount !== undefined
+          ? nativeToScVal(BigInt(updates.maxWithdrawalAmount), {
+              type: 'i128',
+            } as any)
+          : nativeToScVal(null as any);
+      const sigsScVal =
+        updates.requiredSignatures !== undefined
+          ? nativeToScVal(updates.requiredSignatures, { type: 'u32' } as any)
+          : nativeToScVal(null as any);
+      const delayScVal =
+        updates.timelockDelaySecs !== undefined
+          ? nativeToScVal(updates.timelockDelaySecs, { type: 'u64' } as any)
+          : nativeToScVal(null as any);
+      const { txHash } = await this.submitTransaction(
+        adminKeypair,
+        'update_config',
+        [adminScVal, maxAmountScVal, sigsScVal, delayScVal]
+      );
+      return { success: true, txHash };
     } catch (error: any) {
       return {
         success: false,
-        error: error.message,
+        error: error?.message || String(error),
       };
     }
   }
 
   /**
    * Get current emergency configuration
+   * NOTE: Falls back to safe static defaults when the contract cannot be
+   * reached. Mutating methods above never use this fallback to claim
+   * success — they submit real transactions (see #1195).
    */
   async getConfig(): Promise<EmergencyConfig> {
     // In production, this would read from contract storage
@@ -872,6 +999,155 @@ export async function handleGetAuditLogs(req: any, res: any) {
   }
 }
 
+/**
+ * POST /api/emergency/withdraw/cancel
+ * Cancel a withdrawal request (real on-chain transaction).
+ */
+export async function handleCancelWithdrawal(req: any, res: any) {
+  try {
+    const { adminSecret, contractId, requestId, reason, rpcUrl } = req.body;
+    if (!adminSecret || !contractId || !requestId || !reason) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: adminSecret, contractId, requestId, reason',
+      });
+    }
+    const adminKeypair = Keypair.fromSecret(adminSecret);
+    const service = createEmergencyService(rpcUrl, contractId);
+    const result = await service.cancelWithdrawal(adminKeypair, requestId, reason);
+    res.status(result.success ? 200 : 500).json(result);
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * POST /api/emergency/admin/add
+ * Add a secondary admin (real on-chain transaction).
+ */
+export async function handleAddAdmin(req: any, res: any) {
+  try {
+    const { adminSecret, contractId, newAdminAddress, rpcUrl } = req.body;
+    if (!adminSecret || !contractId || !newAdminAddress) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: adminSecret, contractId, newAdminAddress',
+      });
+    }
+    const adminKeypair = Keypair.fromSecret(adminSecret);
+    const service = createEmergencyService(rpcUrl, contractId);
+    const result = await service.addAdmin(adminKeypair, newAdminAddress);
+    res.status(result.success ? 200 : 500).json(result);
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * POST /api/emergency/config/update
+ * Update emergency configuration (real on-chain transaction).
+ */
+export async function handleUpdateConfig(req: any, res: any) {
+  try {
+    const {
+      adminSecret,
+      contractId,
+      maxWithdrawalAmount,
+      requiredSignatures,
+      timelockDelaySecs,
+      rpcUrl,
+    } = req.body;
+    if (!adminSecret || !contractId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: adminSecret, contractId',
+      });
+    }
+    const adminKeypair = Keypair.fromSecret(adminSecret);
+    const service = createEmergencyService(rpcUrl, contractId);
+    const result = await service.updateConfig(adminKeypair, {
+      maxWithdrawalAmount,
+      requiredSignatures,
+      timelockDelaySecs,
+    });
+    res.status(result.success ? 200 : 500).json(result);
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Express router mounting all emergency endpoints.
+ * Mount at `/api/emergency` (see `src/app.ts`).
+ * Mutating routes require an Admin API key and use the strict rate limiter
+ * (see #1196); read routes require only the shared auth + rate-limit chain.
+ */
+export const emergencyRouter = Router();
+
+emergencyRouter.use(authMiddleware);
+emergencyRouter.use(rateLimitMiddleware);
+
+emergencyRouter.get('/health', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    service: 'Emergency API',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+emergencyRouter.post(
+  '/activate',
+  strictRateLimitMiddleware,
+  requireAdmin,
+  handleActivateEmergency
+);
+emergencyRouter.post(
+  '/deactivate',
+  strictRateLimitMiddleware,
+  requireAdmin,
+  handleDeactivateEmergency
+);
+emergencyRouter.post(
+  '/withdraw/request',
+  strictRateLimitMiddleware,
+  requireAdmin,
+  handleRequestWithdrawal
+);
+emergencyRouter.post(
+  '/withdraw/approve',
+  strictRateLimitMiddleware,
+  requireAdmin,
+  handleApproveWithdrawal
+);
+emergencyRouter.post(
+  '/withdraw/execute',
+  strictRateLimitMiddleware,
+  requireAdmin,
+  handleExecuteWithdrawal
+);
+emergencyRouter.post(
+  '/withdraw/cancel',
+  strictRateLimitMiddleware,
+  requireAdmin,
+  handleCancelWithdrawal
+);
+emergencyRouter.post(
+  '/admin/add',
+  strictRateLimitMiddleware,
+  requireAdmin,
+  handleAddAdmin
+);
+emergencyRouter.post(
+  '/config/update',
+  strictRateLimitMiddleware,
+  requireAdmin,
+  handleUpdateConfig
+);
+emergencyRouter.get('/config', handleGetConfig);
+emergencyRouter.get('/status', handleGetSystemStatus);
+emergencyRouter.get('/audit-logs', handleGetAuditLogs);
+
 export default {
   EmergencyWithdrawalService,
   createEmergencyService,
@@ -880,7 +1156,11 @@ export default {
   handleRequestWithdrawal,
   handleApproveWithdrawal,
   handleExecuteWithdrawal,
+  handleCancelWithdrawal,
+  handleAddAdmin,
+  handleUpdateConfig,
   handleGetConfig,
   handleGetSystemStatus,
   handleGetAuditLogs,
+  emergencyRouter,
 };

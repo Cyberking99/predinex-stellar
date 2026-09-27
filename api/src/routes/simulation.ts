@@ -3,14 +3,12 @@
  * Technical Scope: api/src/routes/simulation.ts
  */
 
-import {
-  PositionSimulationRequest,
-  ApiResponse,
-  PositionSimulationResponse,
-  SimulationWarning,
-} from '../types/index.js';
+import { Router, Request, Response } from 'express';
+import { PositionSimulationRequest, ApiResponse, PositionSimulationResponse } from '../types/index.js';
 import { SimulationEngine } from '../services/simulation-engine.js';
 import { SecuritySanitizer } from '../middleware/security.js';
+import { authMiddleware } from '../middleware/auth.js';
+import { rateLimitMiddleware } from '../middleware/rate-limit.js';
 
 /** Documented defaults applied only when a parameter is absent or unparseable. */
 export const DEFAULT_LIQUIDATION_THRESHOLD_BPS = 8000;
@@ -162,3 +160,31 @@ export class SimulationRouteHandler {
     }
   }
 }
+
+/**
+ * Express router mounting simulation endpoints.
+ * Mount at `/api/simulation` (see `src/app.ts`).
+ */
+export const simulationRouter = Router();
+
+simulationRouter.use(authMiddleware);
+simulationRouter.use(rateLimitMiddleware);
+
+simulationRouter.get('/health', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    service: 'Simulation API',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+function sendSimulate(req: Request, res: Response): void {
+  const result = SimulationRouteHandler.handleSimulate(req.body);
+  res.status(result.success ? 200 : 400).json(result);
+}
+
+simulationRouter.post('/simulate', sendSimulate);
+simulationRouter.post('/position-health', sendSimulate);
+
+export default simulationRouter;

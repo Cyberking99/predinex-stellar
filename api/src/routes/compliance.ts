@@ -3,6 +3,7 @@
  * Technical Scope: api/src/routes/compliance.ts
  */
 
+import { Router, Request, Response } from 'express';
 import {
   ApiResponse,
   ComplianceCheckRequest,
@@ -12,6 +13,11 @@ import {
 } from '../types/index.js';
 import { ComplianceEngine } from '../services/compliance-engine.js';
 import { SecuritySanitizer } from '../middleware/security.js';
+import { authMiddleware, requireComplianceOfficer } from '../middleware/auth.js';
+import {
+  rateLimitMiddleware,
+  strictRateLimitMiddleware,
+} from '../middleware/rate-limit.js';
 
 export class ComplianceRouteHandler {
   private engine: ComplianceEngine;
@@ -85,3 +91,46 @@ export class ComplianceRouteHandler {
     };
   }
 }
+
+/**
+ * Express router mounting compliance endpoints.
+ * Mount at `/api/compliance` (see `src/app.ts`).
+ */
+export const complianceRouter = Router();
+
+complianceRouter.use(authMiddleware);
+complianceRouter.use(rateLimitMiddleware);
+
+complianceRouter.get('/health', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    service: 'Compliance API',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+complianceRouter.post('/verify', (req: Request, res: Response) => {
+  const handler = new ComplianceRouteHandler();
+  const result = handler.handleVerifyTransaction(req.body);
+  res.status(result.success ? 200 : 400).json(result);
+});
+
+complianceRouter.post(
+  '/register',
+  strictRateLimitMiddleware,
+  requireComplianceOfficer,
+  (req: Request, res: Response) => {
+    const handler = new ComplianceRouteHandler();
+    const result = handler.handleRegister(req.body);
+    res.status(result.success ? 200 : 400).json(result);
+  }
+);
+
+complianceRouter.get('/status/:address', (req: Request, res: Response) => {
+  const handler = new ComplianceRouteHandler();
+  const result = handler.handleGetStatus(req.params.address);
+  res.status(result.success ? 200 : 404).json(result);
+});
+
+export default complianceRouter;

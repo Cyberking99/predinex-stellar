@@ -3,6 +3,7 @@
  * Technical Scope: api/src/routes/insurance.ts
  */
 
+import { Router, Request, Response } from 'express';
 import {
   ApiResponse,
   ClaimSubmissionRequest,
@@ -16,6 +17,8 @@ import {
 } from '../types/index.js';
 import { InsuranceEngine } from '../services/insurance-engine.js';
 import { SecuritySanitizer } from '../middleware/security.js';
+import { authMiddleware } from '../middleware/auth.js';
+import { rateLimitMiddleware } from '../middleware/rate-limit.js';
 
 export class InsuranceRouteHandler {
   private engine: InsuranceEngine;
@@ -146,3 +149,61 @@ export class InsuranceRouteHandler {
     }
   }
 }
+
+/**
+ * Express router mounting insurance endpoints.
+ * Mount at `/api/insurance` (see `src/app.ts`).
+ */
+export const insuranceRouter = Router();
+
+insuranceRouter.use(authMiddleware);
+insuranceRouter.use(rateLimitMiddleware);
+
+insuranceRouter.get('/health', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    service: 'Insurance API',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+insuranceRouter.get('/pools', (req: Request, res: Response) => {
+  const handler = new InsuranceRouteHandler();
+  res.json(handler.handleListPools());
+});
+
+insuranceRouter.post('/quote', (req: Request, res: Response) => {
+  const handler = new InsuranceRouteHandler();
+  const result = handler.handleGetQuote(req.body);
+  res.status(result.success ? 200 : 400).json(result);
+});
+
+insuranceRouter.post('/purchase', (req: Request, res: Response) => {
+  const handler = new InsuranceRouteHandler();
+  const result = handler.handlePurchase(req.body);
+  res.status(result.success ? 200 : 400).json(result);
+});
+
+insuranceRouter.post('/claim', (req: Request, res: Response) => {
+  const handler = new InsuranceRouteHandler();
+  const result = handler.handleSubmitClaim(req.body);
+  res.status(result.success ? 200 : 400).json(result);
+});
+
+insuranceRouter.get('/audit/:poolId', (req: Request, res: Response) => {
+  const handler = new InsuranceRouteHandler();
+  const poolId = parseInt(req.params.poolId, 10);
+  if (!Number.isInteger(poolId)) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'INVALID_POOL_ID', message: 'poolId must be an integer' },
+      timestamp: Date.now(),
+    });
+    return;
+  }
+  const result = handler.handleSolvencyAudit(poolId);
+  res.status(result.success ? 200 : 400).json(result);
+});
+
+export default insuranceRouter;

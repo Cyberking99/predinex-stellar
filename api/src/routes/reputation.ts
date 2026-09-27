@@ -3,6 +3,7 @@
  * Technical Scope: api/src/routes/reputation.ts
  */
 
+import { Router, Request, Response } from 'express';
 import {
   ApiResponse,
   ReputationSimulateRequest,
@@ -10,6 +11,8 @@ import {
   UserReputationDto,
 } from '../types/index.js';
 import { ReputationEngine } from '../services/reputation-engine.js';
+import { authMiddleware } from '../middleware/auth.js';
+import { rateLimitMiddleware } from '../middleware/rate-limit.js';
 
 export class ReputationRouteHandler {
   private engine: ReputationEngine;
@@ -79,3 +82,40 @@ export class ReputationRouteHandler {
     };
   }
 }
+
+/**
+ * Express router mounting reputation endpoints.
+ * Mount at `/api/reputation` (see `src/app.ts`).
+ */
+export const reputationRouter = Router();
+
+reputationRouter.use(authMiddleware);
+reputationRouter.use(rateLimitMiddleware);
+
+reputationRouter.get('/health', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    service: 'Reputation API',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+reputationRouter.get('/profile/:address', (req: Request, res: Response) => {
+  const handler = new ReputationRouteHandler();
+  const result = handler.handleGetProfile(req.params.address);
+  res.status(result.success ? 200 : 400).json(result);
+});
+
+reputationRouter.post('/simulate', (req: Request, res: Response) => {
+  const handler = new ReputationRouteHandler();
+  const result = handler.handleSimulateAction(req.body);
+  res.status(result.success ? 200 : 400).json(result);
+});
+
+reputationRouter.get('/leaderboard', (_req: Request, res: Response) => {
+  const handler = new ReputationRouteHandler();
+  res.json(handler.handleLeaderboard());
+});
+
+export default reputationRouter;

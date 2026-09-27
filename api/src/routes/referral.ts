@@ -5,7 +5,8 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { body, validationResult } from 'express-validator';
-import { AuthValidator } from '../middleware/auth.js';
+import { AuthValidator, authMiddleware } from '../middleware/auth.js';
+import { rateLimitMiddleware } from '../middleware/rate-limit.js';
 import { SecuritySanitizer } from '../middleware/security.js';
 
 export interface RecordReferralRequest {
@@ -74,6 +75,21 @@ export function createReferralRouter(
   auth: AuthValidator = authValidator
 ): Router {
   const router = Router();
+
+  // Shared auth context + rate limiting on every referral route (see #1196).
+  // Inline 401 auth checks below are preserved; this middleware only attaches
+  // context and enforces rate limits without weakening authentication.
+  router.use(authMiddleware);
+  router.use(rateLimitMiddleware);
+
+  router.get('/health', (_req: Request, res: Response) => {
+    res.json({
+      success: true,
+      service: 'Referral API',
+      version: '1.0.0',
+      timestamp: new Date().toISOString(),
+    });
+  });
 
   router.post(
     '/',
@@ -152,4 +168,5 @@ export function createReferralRouter(
 }
 
 const router = createReferralRouter();
+export const referralRouter = router;
 export default router;

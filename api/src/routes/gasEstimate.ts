@@ -7,6 +7,9 @@
  */
 
 import { Contract, SorobanRpc, xdr, Address } from 'stellar-sdk';
+import { Router, Request, Response } from 'express';
+import { authMiddleware } from '../middleware/auth.js';
+import { rateLimitMiddleware } from '../middleware/rate-limit.js';
 
 /**
  * Gas estimation result with detailed breakdown
@@ -536,10 +539,33 @@ export async function handleAnalysisReportRequest(req: any, res: any) {
   }
 }
 
+/**
+ * Express router mounting all gas-estimate endpoints.
+ * Mount at `/api/gas-estimate` (see `src/app.ts`).
+ */
+export const gasEstimateRouter = Router();
+
+gasEstimateRouter.use(authMiddleware);
+gasEstimateRouter.use(rateLimitMiddleware);
+
+gasEstimateRouter.get('/health', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    service: 'Gas Estimator API',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+gasEstimateRouter.post('/estimate', handleGasEstimateRequest);
+gasEstimateRouter.post('/suggestions', handleOptimizationSuggestionsRequest);
+gasEstimateRouter.post('/report', handleAnalysisReportRequest);
+
 export default {
   GasEstimatorService,
   createGasEstimator,
   handleGasEstimateRequest,
   handleOptimizationSuggestionsRequest,
   handleAnalysisReportRequest,
+  gasEstimateRouter,
 };

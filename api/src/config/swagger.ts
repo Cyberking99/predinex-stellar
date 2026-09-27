@@ -394,15 +394,157 @@ export const openApiDoc = {
   },
   servers: [
     {
-      url: '/api',
-      description: 'Development server',
+      url: 'http://localhost:3001',
+      description: 'Local development server (npm run dev, PORT=3001)',
     },
     {
       url: 'https://api.predinex.stellar.org',
       description: 'Production server',
     },
   ],
-  paths: {},
+  paths: {
+    '/health': {
+      get: {
+        summary: 'Liveness probe',
+        responses: { '200': { description: 'Process is up' } },
+      },
+    },
+    '/api/health': {
+      get: {
+        summary: 'Liveness probe under the API prefix',
+        responses: { '200': { description: 'Process is up' } },
+      },
+    },
+    '/api/openapi.json': {
+      get: {
+        summary: 'OpenAPI document for this server',
+        responses: { '200': { description: 'OpenAPI 3.1 JSON' } },
+      },
+    },
+    '/api/budget/plan': {
+      post: { summary: 'Create a budget plan', responses: { '200': { description: 'Budget plan' } } },
+    },
+    '/api/budget/portfolio/{lenderAddress}': {
+      get: { summary: 'Get portfolio metrics', responses: { '200': { description: 'Portfolio metrics' } } },
+    },
+    '/api/budget/liquidity/{lenderAddress}': {
+      get: { summary: 'Project liquidity', responses: { '200': { description: 'Liquidity projection' } } },
+    },
+    '/api/budget/optimize-fees': {
+      post: { summary: 'Fee optimization recommendations', responses: { '200': { description: 'Fee optimization' } } },
+    },
+    '/api/budget/risk-assessment': {
+      post: { summary: 'Assess pool risk', responses: { '200': { description: 'Risk assessment' } } },
+    },
+    '/api/budget/health': {
+      get: { summary: 'Budget service health', responses: { '200': { description: 'OK' } } },
+    },
+    '/api/compliance/verify': {
+      post: { summary: 'Verify a transaction against compliance rules', responses: { '200': { description: 'Compliance verdict' } } },
+    },
+    '/api/compliance/register': {
+      post: { summary: 'Register a participant (officer/admin only)', responses: { '200': { description: 'Compliance record' } } },
+    },
+    '/api/compliance/status/{address}': {
+      get: { summary: 'Get compliance status', responses: { '200': { description: 'Compliance record' } } },
+    },
+    '/api/compliance/health': {
+      get: { summary: 'Compliance service health', responses: { '200': { description: 'OK' } } },
+    },
+    '/api/emergency/activate': {
+      post: { summary: 'Activate emergency mode (admin, real on-chain tx)', responses: { '200': { description: 'Activation tx hash' } } },
+    },
+    '/api/emergency/deactivate': {
+      post: { summary: 'Deactivate emergency mode (admin, real on-chain tx)', responses: { '200': { description: 'Deactivation tx hash' } } },
+    },
+    '/api/emergency/withdraw/request': {
+      post: { summary: 'Create an emergency withdrawal request', responses: { '200': { description: 'Request + tx hash' } } },
+    },
+    '/api/emergency/withdraw/approve': {
+      post: { summary: 'Approve a withdrawal request', responses: { '200': { description: 'Approval tx hash' } } },
+    },
+    '/api/emergency/withdraw/execute': {
+      post: { summary: 'Execute an approved withdrawal', responses: { '200': { description: 'Execution tx hash' } } },
+    },
+    '/api/emergency/withdraw/cancel': {
+      post: { summary: 'Cancel a withdrawal request', responses: { '200': { description: 'Cancellation tx hash' } } },
+    },
+    '/api/emergency/admin/add': {
+      post: { summary: 'Add a secondary admin', responses: { '200': { description: 'Add-admin tx hash' } } },
+    },
+    '/api/emergency/config/update': {
+      post: { summary: 'Update emergency configuration', responses: { '200': { description: 'Update tx hash' } } },
+    },
+    '/api/emergency/config': {
+      get: { summary: 'Get emergency configuration', responses: { '200': { description: 'Emergency config' } } },
+    },
+    '/api/emergency/status': {
+      get: { summary: 'Get emergency system status', responses: { '200': { description: 'System status' } } },
+    },
+    '/api/emergency/audit-logs': {
+      get: { summary: 'Get emergency audit logs', responses: { '200': { description: 'Audit logs' } } },
+    },
+    '/api/emergency/health': {
+      get: { summary: 'Emergency service health', responses: { '200': { description: 'OK' } } },
+    },
+    '/api/gas-estimate/estimate': {
+      post: { summary: 'Estimate gas for an operation', responses: { '200': { description: 'Gas estimate' } } },
+    },
+    '/api/gas-estimate/suggestions': {
+      post: { summary: 'Gas optimization suggestions', responses: { '200': { description: 'Suggestions' } } },
+    },
+    '/api/gas-estimate/report': {
+      post: { summary: 'Full gas analysis report', responses: { '200': { description: 'Analysis report' } } },
+    },
+    '/api/gas-estimate/health': {
+      get: { summary: 'Gas estimator health', responses: { '200': { description: 'OK' } } },
+    },
+    '/api/insurance/pools': {
+      get: { summary: 'List insurance pools', responses: { '200': { description: 'Pool list' } } },
+    },
+    '/api/insurance/quote': {
+      post: { summary: 'Get an insurance quote', responses: { '200': { description: 'Quote' } } },
+    },
+    '/api/insurance/purchase': {
+      post: { summary: 'Purchase a policy', responses: { '200': { description: 'Policy' } } },
+    },
+    '/api/insurance/claim': {
+      post: { summary: 'Submit a claim', responses: { '200': { description: 'Claim' } } },
+    },
+    '/api/insurance/audit/{poolId}': {
+      get: { summary: 'Solvency audit for a pool', responses: { '200': { description: 'Audit' } } },
+    },
+    '/api/insurance/health': {
+      get: { summary: 'Insurance service health', responses: { '200': { description: 'OK' } } },
+    },
+    '/api/referral': {
+      post: { summary: 'Create a referral (stub, 501 until on-chain wiring)', responses: { '501': { description: 'Not implemented' } } },
+    },
+    '/api/referral/health': {
+      get: { summary: 'Referral service health', responses: { '200': { description: 'OK' } } },
+    },
+    '/api/reputation/profile/{address}': {
+      get: { summary: 'Get reputation profile', responses: { '200': { description: 'Profile' } } },
+    },
+    '/api/reputation/simulate': {
+      post: { summary: 'Simulate reputation impact', responses: { '200': { description: 'Simulation' } } },
+    },
+    '/api/reputation/leaderboard': {
+      get: { summary: 'Top reputations', responses: { '200': { description: 'Leaderboard' } } },
+    },
+    '/api/reputation/health': {
+      get: { summary: 'Reputation service health', responses: { '200': { description: 'OK' } } },
+    },
+    '/api/simulation/simulate': {
+      post: { summary: 'Simulate position health', responses: { '200': { description: 'Simulation result' } } },
+    },
+    '/api/simulation/position-health': {
+      post: { summary: 'Simulate position health (alias)', responses: { '200': { description: 'Simulation result' } } },
+    },
+    '/api/simulation/health': {
+      get: { summary: 'Simulation service health', responses: { '200': { description: 'OK' } } },
+    },
+  },
   components: {
     schemas: {
       ...baseSchemas,

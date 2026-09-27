@@ -22,6 +22,8 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { body, param, query, validationResult } from 'express-validator';
+import { authMiddleware } from '../middleware/auth.js';
+import { rateLimitMiddleware } from '../middleware/rate-limit.js';
 
 // ============================================================================
 // Types & Interfaces
@@ -321,6 +323,10 @@ export const contractService = new ContractService();
 export function createBudgetRouter(service: ContractService = contractService): Router {
   const router = Router();
 
+  // Shared auth context + rate limiting on every budget route (see #1196).
+  router.use(authMiddleware);
+  router.use(rateLimitMiddleware);
+
   /**
    * POST /api/budget/plan
    * Create a new budget plan
@@ -561,5 +567,6 @@ export function createBudgetRouter(service: ContractService = contractService): 
 }
 
 const defaultRouter = createBudgetRouter();
+export const budgetRouter = defaultRouter;
 export default defaultRouter;
 

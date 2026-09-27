@@ -1,8 +1,15 @@
 /**
  * Authentication and Role-Based Authorization Middleware.
+ *
+ * Provides both the `AuthValidator` helper (API-key -> role resolution and
+ * HMAC payload signing) and Express middleware wrappers (`authMiddleware`,
+ * `requireRole`, `requireAdmin`) so routes can enforce authentication.
+ * Previously these helpers were exported from the package barrel but never
+ * applied to any route (see #1196).
  */
 
 import { createHmac, timingSafeEqual } from 'crypto';
+import type { NextFunction, Request, Response } from 'express';
 
 export type UserRole = 'User' | 'ComplianceOfficer' | 'Assessor' | 'Admin';
 
@@ -62,3 +69,88 @@ export class AuthValidator {
     return 'sha256=' + createHmac('sha256', this.secretKey).update(payload).digest('hex');
   }
 }
+
+/**
+ * Shared validator instance wired to Express middleware below.
+ * API keys are loaded from the environment so operators can harden the API
+ * without code changes:
+ *   ADMIN_API_KEYS, OFFICER_API_KEYS, ASSESSOR_API_KEYS (comma-separated)
+ *   AUTH_SECRET
+ */
+function loadKeysFromEnv(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+}
+
+export const sharedAuthValidator = new AuthValidator(
+  process.env.AUTH_SECRET || 'stellar-lend-production-secret-key-32b'
+);
+
+for (const key of loadKeysFromEnv(process.env.ADMIN_API_KEYS)) {
+  sharedAuthValidator.registerKey(key, 'Admin');
+}
+for (const key of loadKeysFromEnv(process.env.OFFICER_API_KEYS)) {
+  sharedAuthValidator.registerKey(key, 'ComplianceOfficer');
+}
+for (const key of loadKeysFromEnv(process.env.ASSESSOR_API_KEYS)) {
+  sharedAuthValidator.registerKey(key, 'Assessor');
+}
+
+/**
+ * Attach `req.auth` for every request. Never blocks — use `requireRole`
+ * after it to enforce authorization on sensitive routes.
+ */
+export function authMiddleware(
+  req: Request,
+  _res: Response,
+  next: NextFunction
+): void {
+  const apiKey =
+    (req.headers['x-api-key'] as string | undefined) ||
+    (req.query.apiKey as string | undefined);
+  const ctx = sharedAuthValidator.authenticate(
+    apiKey ? { 'x-api-key': apiKey } : {}
+  );
+  (req as any).auth = ctx;
+  next();
+}
+
+/**
+ * Enforce that the caller holds one of the allowed roles.
+ * Returns 401 when the role check fails.
+ */
+export function requireRole(roles: UserRole[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const existing = (req as any).auth as AuthContext | undefined;
+    const ctx =
+      existing ||
+      sharedAuthValidator.authenticate({
+        'x-api-key': req.headers['x-api-key'] as string | undefined,
+      });
+    (req as any).auth = ctx;
+    if (!roles.includes(ctx.role)) {
+      res.status(401).json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: `Requires one of roles: ${roles.join(', ')}`,
+        },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+    next();
+  };
+}
+
+/** Shorthand for admin-only routes (emergency controls, etc). */
+export const requireAdmin = requireRole(['Admin']);
+
+/** Shorthand for compliance officer + admin routes. */
+export const requireComplianceOfficer = requireRole([
+  'Admin',
+  'ComplianceOfficer',
+]);

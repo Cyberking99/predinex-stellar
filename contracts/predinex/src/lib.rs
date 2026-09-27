@@ -3785,6 +3785,19 @@ impl PredinexContract {
                 .get(&DataKey::TreasuryRecipient)
                 .ok_or(ContractError::NotInitialized)?;
             token_client.transfer(&creator, &treasury_recipient, &creation_fee);
+            // #1227 — Record the creation fee in the treasury ledger so that
+            // get_treasury_balance accurately reflects this revenue stream.
+            let current_treasury: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Treasury)
+                .unwrap_or(0);
+            let next_treasury = current_treasury
+                .checked_add(creation_fee)
+                .ok_or(ContractError::TreasuryOverflow)?;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Treasury, &next_treasury);
         }
 
         let pool_id = Self::get_pool_counter(env) + 1;
@@ -4431,6 +4444,10 @@ impl PredinexContract {
                     env.storage()
                         .persistent()
                         .remove(&DataKey::PoolCoolingUntil(pool_id));
+                    // #1230 — emit the same pool_unfrozen event as the
+                    // dedicated unfreeze_pool path so indexers always observe
+                    // the Frozen→Open transition.
+                    emit_pool_unfrozen(&env, pool_id, user.clone());
                 } else {
                     return Err(ContractError::PoolIsFrozen);
                 }
@@ -4566,10 +4583,9 @@ impl PredinexContract {
             .checked_sub(fee_amount)
             .ok_or(ContractError::InvalidBetAmount)?;
 
-        token_client.transfer(&user, env.current_contract_address(), &amount);
-        if fee_amount > 0 {
-            token_client.transfer(&env.current_contract_address(), &fee_recipient, &fee_amount);
-        }
+        // #1229 — All state writes happen before external token transfers
+        // (checks-effects-interactions). The transfer block is at the bottom
+        // of this function, after every storage key has been updated.
 
         let current_outcome_total = totals.get(outcome).ok_or(ContractError::InvalidOutcome)?;
         totals.set(
@@ -4715,6 +4731,28 @@ impl PredinexContract {
         // #705/#811 — Persist the daily/weekly loss windows and large-bet
         // timestamp this bet was validated against.
         Self::record_user_bet_limits_state(&env, &user, pool_id, amount);
+
+        // #1229 — External token transfers come after all state writes
+        // (checks-effects-interactions). If the token reverts, the whole
+        // transaction rolls back with no state change.
+        // #1227 — Credit the treasury ledger for the bet fee so
+        // get_treasury_balance accurately tracks this revenue stream.
+        token_client.transfer(&user, &env.current_contract_address(), &amount);
+        if fee_amount > 0 {
+            token_client.transfer(&env.current_contract_address(), &fee_recipient, &fee_amount);
+            // Credit the fee to the treasury ledger.
+            let current_treasury: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Treasury)
+                .unwrap_or(0);
+            let next_treasury = current_treasury
+                .checked_add(fee_amount)
+                .ok_or(ContractError::TreasuryOverflow)?;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Treasury, &next_treasury);
+        }
 
         // Calculate totals for the event
         let total_yes = pool.total_a;
@@ -5213,16 +5251,26 @@ impl PredinexContract {
             .get::<_, Pool>(&DataKey::Pool(pool_id))
             .ok_or(ContractError::PoolNotFound)?;
 
+        // #1228 — Reject terminal and protected states unconditionally,
+        // regardless of caller role. Disputed pools must not be cancellable
+        // because that would discard a contested settlement under review.
+        // Frozen pools are in a temporary protection window. Scheduled pools
+        // have not yet opened for betting and cancellation would bypass the
+        // scheduled lifecycle.
         match pool.status {
             PoolStatus::Settled(_) => return Err(ContractError::PoolAlreadySettled),
             PoolStatus::Voided => return Err(ContractError::PoolAlreadyVoided),
             PoolStatus::Cancelled => return Err(ContractError::PoolIsCancelled),
+            PoolStatus::Disputed => return Err(ContractError::PoolIsDisputed),
+            PoolStatus::Frozen => return Err(ContractError::PoolIsFrozen),
+            PoolStatus::Scheduled(_) => return Err(ContractError::Unauthorized),
             _ => {}
         }
 
         let admin = Self::get_admin(env.clone());
         let is_admin = admin.as_ref() == Some(&caller);
         let is_creator = pool.creator == caller;
+        // Admin can cancel an Open pool (emergency); creator can only cancel their own Open pool.
         let auth_ok = is_admin || (is_creator && pool.status == PoolStatus::Open);
 
         if !auth_ok {

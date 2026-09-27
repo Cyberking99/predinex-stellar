@@ -607,9 +607,16 @@ impl BudgetPlanner {
             // EqualWeight, ReturnWeighted, and Custom all use equal weight
             _ => {
                 let per_pool = total_amount / pool_ids.len() as i128;
-                let weight_pct = 10_000 / pool_ids.len() as i128;
+                let base_weight = 10_000 / pool_ids.len() as i128;
+                let mut assigned_weight = 0i128;
 
-                for pool_id in pool_ids.iter() {
+                for (index, pool_id) in pool_ids.iter().enumerate() {
+                    let weight_pct = if index + 1 == pool_ids.len() as usize {
+                        10_000 - assigned_weight
+                    } else {
+                        base_weight
+                    };
+                    assigned_weight += weight_pct;
                     let risk = Self::volatility_or_default(env, pool_id)?;
                     allocations.push_back(PoolAllocation {
                         pool_id,
@@ -821,6 +828,9 @@ impl BudgetPlanner {
 
     fn estimate_volume_impact(current: u32, new: u32) -> Result<i128, ContractError> {
         // Simplified elasticity model
+        if current == 0 {
+            return Err(ContractError::FeeOutOfBounds);
+        }
         let fee_change_pct = ((new as i128 - current as i128) * 100) / current as i128;
         let volume_impact = fee_change_pct * -2; // -2% volume per 1% fee increase
         Ok(volume_impact)
@@ -852,6 +862,10 @@ impl BudgetPlanner {
 
     fn calculate_competitiveness(fee: u32, market_avg: u32) -> Result<i128, ContractError> {
         // Score 0-100, higher is better
+        // Without market data, use a neutral score.
+        if market_avg == 0 {
+            return Ok(50);
+        }
         if fee <= market_avg {
             let discount_pct = ((market_avg - fee) as i128 * 100) / market_avg as i128;
             Ok(50 + discount_pct.min(50))
@@ -1236,6 +1250,71 @@ fn test_liquid_balance_and_unlock_time_reads_positions() {
     });
 }
 
+
+#[test]
+fn test_zero_fee_projection_returns_typed_error() {
+    let env = Env::default();
+    assert_eq!(BudgetPlanner::estimate_volume_impact(0, 50).err(), Some(ContractError::FeeOutOfBounds));
+    let competitors = Vec::new(&env);
+    assert_eq!(BudgetPlanner::optimize_fees(&env, 0, 1_000_000, competitors).err(), Some(ContractError::FeeOutOfBounds));
+    assert_eq!(BudgetPlanner::estimate_volume_impact(100, 101).unwrap(), -2);
+    assert_eq!(BudgetPlanner::estimate_volume_impact(100, 150).unwrap(), -100);
+}
+
+#[test]
+fn test_zero_market_average_has_neutral_competitiveness() {
+    assert_eq!(BudgetPlanner::calculate_competitiveness(0, 0).unwrap(), 50);
+    assert_eq!(BudgetPlanner::calculate_competitiveness(100, 0).unwrap(), 50);
+    assert!(BudgetPlanner::calculate_competitiveness(50, 200).unwrap() > 50);
+}
+
+#[test]
+fn test_equal_weight_allocations_handle_empty_and_sum_to_full_weight() {
+    let env = Env::default();
+    let contract_id = test_contract(&env);
+    env.as_contract(&contract_id, || {
+        let empty = pool_ids_of(&env, &[]);
+        assert!(BudgetPlanner::calculate_allocations(&env, &empty, 10_000, &AllocationStrategy::EqualWeight).unwrap().is_empty());
+        for id in 1..=3 {
+            setup_test_pool(&env, id, 1_000_000, 1_000_000, 2, 5_000_000);
+        }
+        for (ids, expected_len) in [(&[1][..], 1u32), (&[1, 2, 3][..], 3u32)] {
+            let allocations = BudgetPlanner::calculate_allocations(&env, &pool_ids_of(&env, ids), 10_000, &AllocationStrategy::EqualWeight).unwrap();
+            assert_eq!(allocations.len(), expected_len);
+            let weights: i128 = allocations.iter().map(|a| a.weight_pct).sum();
+            assert_eq!(weights, 10_000);
+        }
+    });
+}
+
+#[test]
+fn test_eligible_pool_total_overflow_is_a_typed_error() {
+    let env = Env::default();
+    let contract_id = test_contract(&env);
+    env.as_contract(&contract_id, || {
+        setup_test_pool(&env, 1, i128::MAX, 1, 5, 5_000_000);
+        assert_eq!(BudgetPlanner::get_eligible_pools(&env, RiskTolerance::Aggressive).err(), Some(ContractError::PoolTotalOverflow));
+    });
+}
+
+#[test]
+fn test_eligible_pool_total_boundary_and_zero_are_valid() {
+    let env = Env::default();
+    let contract_id = test_contract(&env);
+    env.as_contract(&contract_id, || {
+        setup_test_pool(&env, 1, i128::MAX - 1, 1, 5, 5_000_000);
+        assert_eq!(
+            BudgetPlanner::get_eligible_pools(&env, RiskTolerance::Aggressive).unwrap(),
+            pool_ids_of(&env, &[1])
+        );
+
+        setup_test_pool(&env, 2, 0, 0, 0, 5_000_000);
+        assert_eq!(
+            BudgetPlanner::get_eligible_pools(&env, RiskTolerance::Aggressive).unwrap(),
+            pool_ids_of(&env, &[1, 2])
+        );
+    });
+}
 
 // ============================================================================
 // Overflow is an error, never a zero (issue #1217)

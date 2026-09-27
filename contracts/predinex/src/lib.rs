@@ -5827,18 +5827,34 @@ impl PredinexContract {
             return Err(ContractError::MultiAssetClaimRequired);
         }
 
-        let pool = env
+        let mut pool = env
             .storage()
             .persistent()
             .get::<_, Pool>(&DataKey::Pool(pool_id))
             .ok_or(ContractError::PoolNotFound)?;
 
-        // Only open (unsettled) pools qualify — any terminal or frozen state is rejected.
-        if pool.status != PoolStatus::Open {
+        // #1231 — Settlement and expiry refund are mutually exclusive by status.
+        //
+        // `settle_pool` requires `Open` and `claim_expired` used to run in the
+        // very same ledger second it became legal, so a loser could refund at
+        // `expiry + 1` and the creator could still settle afterwards. The refund
+        // moved tokens out without touching the outcome totals settlement reads,
+        // so the winner's payout was computed from a stale (larger) total and
+        // reverted with a bare shortfall.
+        //
+        // Both halves are fixed here: the first expiry refund closes settlement
+        // by moving the pool to `Voided` (already meaning "every participant may
+        // claim a full refund"), and the refund now decrements the same
+        // `PoolOutcomeTotals` / `total_a` / `total_b` that `cancel_bet` and
+        // settlement use. `Voided` is accepted below so the remaining losers can
+        // still be refunded; a pool only reaches that state after expiry has
+        // passed, so this cannot be used to short-circuit a live pool.
+        if pool.status != PoolStatus::Open && pool.status != PoolStatus::Voided {
             return Err(ContractError::PoolNotOpen);
         }
 
-        // Pool must have actually expired.
+        // Pool must have actually expired. Checked for `Voided` too, so an
+        // expiry refund cannot be used to drain a pool that is still open.
         if env.ledger().timestamp() <= pool.expiry {
             return Err(ContractError::PoolNotExpired);
         }
@@ -5854,12 +5870,74 @@ impl PredinexContract {
             return Err(ContractError::NothingToRefund);
         }
 
-        let token_address = env
-            .storage()
+        // #1231 — Mirror `cancel_bet`: the refunded stake has to leave the
+        // outcome totals, or settlement later reads a total the contract no
+        // longer holds. The refund closes the user's whole position, so every
+        // outcome they staked on is debited in full from `PoolOutcomeTotals`,
+        // with `total_a`/`total_b` mirrored for the first two outcomes.
+        //
+        // `read_user_outcome_bets` carries the legacy fallback (positions
+        // recorded before per-outcome tracking fall back to `amount_a`/
+        // `amount_b`), so older pools are debited correctly too.
+        let outcomes = Self::read_outcomes(&env, pool_id, &pool);
+        let mut outcome_bets = Self::read_user_outcome_bets(&env, pool_id, user.clone(), &user_bet);
+        while outcome_bets.len() < outcomes.len() {
+            outcome_bets.push_back(0);
+        }
+        let mut totals = Self::read_outcome_totals(&env, pool_id, &pool);
+        for i in 0..outcome_bets.len() {
+            let outcome = i as u32;
+            let staked = outcome_bets.get(i).unwrap_or(0);
+            if staked <= 0 {
+                continue;
+            }
+            let current = totals.get(i).ok_or(ContractError::InvalidOutcome)?;
+            totals.set(
+                i,
+                current
+                    .checked_sub(staked)
+                    .ok_or(ContractError::InvalidBetAmount)?,
+            );
+            if outcome == 0 {
+                pool.total_a = pool
+                    .total_a
+                    .checked_sub(staked)
+                    .ok_or(ContractError::InvalidBetAmount)?;
+            } else if outcome == 1 {
+                pool.total_b = pool
+                    .total_b
+                    .checked_sub(staked)
+                    .ok_or(ContractError::InvalidBetAmount)?;
+            }
+            outcome_bets.set(i, 0);
+        }
+
+        // #1231 — Close settlement before the money moves. `settle_pool` only
+        // accepts `Open`, so flipping to `Voided` here makes the two paths
+        // mutually exclusive: once any bettor is expiry-refunded, the market
+        // can no longer be resolved and every remaining participant is refunded
+        // in full rather than one side being paid from totals the contract no
+        // longer holds.
+        if pool.status == PoolStatus::Open {
+            pool.status = PoolStatus::Voided;
+        }
+
+        // Persist the decremented pool and outcome totals so settlement and
+        // subsequent refunds both read the post-refund figures.
+        env.storage().persistent().set(&DataKey::Pool(pool_id), &pool);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Pool(pool_id),
+            POOL_BUMP_THRESHOLD,
+            POOL_BUMP_TARGET,
+        );
+        env.storage()
             .persistent()
-            .get::<_, Address>(&DataKey::Token)
-            .ok_or(ContractError::NotInitialized)?;
-        let token_client = token::Client::new(&env, &token_address);
+            .set(&DataKey::PoolOutcomeTotals(pool_id), &totals);
+        env.storage().persistent().extend_ttl(
+            &DataKey::PoolOutcomeTotals(pool_id),
+            POOL_BUMP_THRESHOLD,
+            POOL_BUMP_TARGET,
+        );
 
         // Transfer original stake back — no fee deducted.
         token_client.transfer(&env.current_contract_address(), &user, &refund);
@@ -6225,6 +6303,16 @@ impl PredinexContract {
         let prev_total: i128 = env.storage().persistent().get(&total_key).unwrap_or(0);
         let next_total = prev_total
             .checked_add(winnings)
+        // #1231 — Surface a shortfall as a typed error instead of letting the
+        // transfer revert. `compute_winnings` is derived from recorded totals;
+        // if those ever exceed what the contract actually holds (a refund path
+        // that moved tokens without decrementing them, a mis-scaled pool), the
+        // caller gets `BalanceShortfall` naming the cause rather than a bare
+        // host revert that is indistinguishable from any other failure.
+        let available = token_client.balance(&env.current_contract_address());
+        if available < winnings {
+            return Err(ContractError::BalanceShortfall);
+        }
             .ok_or(ContractError::PoolTotalOverflow)?;
         env.storage().persistent().set(&total_key, &next_total);
 

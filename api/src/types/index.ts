@@ -55,6 +55,20 @@ export interface StressScenarioSummary {
   isLiquidatable: boolean;
 }
 
+/**
+ * A parameter the simulation had to supply or that deserves a second look.
+ * `DEFAULT_APPLIED` means the caller sent nothing usable and the documented
+ * default was used; an explicit value (including `0`) never produces it.
+ */
+export interface SimulationWarning {
+  code: 'DEFAULT_APPLIED' | 'ZERO_LIQUIDATION_THRESHOLD' | 'ZERO_COLLATERAL_FACTOR';
+  asset: string;
+  field: 'liquidationThresholdBps' | 'collateralFactorBps' | 'borrowRateBps';
+  /** The value used in place of a missing one (DEFAULT_APPLIED only). */
+  appliedValue?: number;
+  message: string;
+}
+
 export interface PositionSimulationResponse {
   initialHealthFactorBps: number;
   initialHealthFactor: number;
@@ -71,6 +85,8 @@ export interface PositionSimulationResponse {
   liquidationPriceUsd?: number;
   stressScenarios: StressScenarioSummary[];
   computedAt: number;
+  /** Defaults that were applied and zero risk parameters, so nothing is substituted silently. */
+  warnings?: SimulationWarning[];
 }
 
 export interface InsurancePoolDto {
@@ -215,6 +231,15 @@ export interface ReputationSimulateRequest {
 }
 
 export interface ReputationSimulateResponse {
+  /**
+   * Always true: this is a preview computed from a caller-supplied amount that
+   * is not checked against any on-chain repayment, so it is not authoritative.
+   */
+  isEstimate: true;
+  /** OnTimeRepay only: the volume (base units) that was credited toward the bonus. */
+  volumeCounted?: string;
+  /** OnTimeRepay only: true when the supplied amount was reduced to a ceiling or ignored. */
+  volumeCapped?: boolean;
   currentScore: number;
   currentTier: ReputationTier;
   projectedScore: number;

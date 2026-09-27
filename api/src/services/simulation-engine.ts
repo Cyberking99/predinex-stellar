@@ -156,8 +156,11 @@ export class SimulationEngine {
       const assetVal = amount * price;
 
       totalCollateralUsd += assetVal;
-      liquidationThresholdUsd += (assetVal * (col.liquidationThresholdBps || 0)) / 10_000;
-      maxBorrowUsd += (assetVal * (col.collateralFactorBps || 0)) / 10_000;
+      // Strict: a missing factor is an error, not a quiet 0. `|| 0` made an
+      // omitted liquidationThresholdBps look identical to an explicit 0 and left
+      // the position's threshold understated (issue #1215).
+      liquidationThresholdUsd += (assetVal * this.requireBps(col, 'liquidationThresholdBps')) / 10_000;
+      maxBorrowUsd += (assetVal * this.requireBps(col, 'collateralFactorBps')) / 10_000;
     }
 
     let totalDebtUsd = 0;
@@ -206,6 +209,23 @@ export class SimulationEngine {
       maxWithdrawableUsd: Math.round(maxWithdrawableUsd * 100) / 100,
       maxBorrowableUsd: Math.round(maxBorrowableUsd * 100) / 100,
     };
+  }
+
+  /**
+   * A collateral risk parameter in basis points. Explicit `0` is valid; a
+   * missing, non-numeric or out-of-range value is rejected.
+   */
+  private static requireBps(
+    col: CollateralInput,
+    field: 'liquidationThresholdBps' | 'collateralFactorBps'
+  ): number {
+    const value = col[field];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 10_000) {
+      throw new Error(
+        `Invalid ${field} for collateral ${col.asset}: expected a number between 0 and 10000, got ${String(value)}`
+      );
+    }
+    return value;
   }
 
   private static runStressScenario(

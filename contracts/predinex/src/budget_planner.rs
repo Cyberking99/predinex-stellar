@@ -265,7 +265,7 @@ impl BudgetPlanner {
                                 let total_pool = pool
                                     .total_a
                                     .checked_add(pool.total_b)
-                                    .unwrap_or(0);
+                                    .ok_or(ContractError::PoolTotalOverflow)?;
                                 let outcome_total = if *winning_outcome == 0 {
                                     pool.total_a
                                 } else {
@@ -275,7 +275,7 @@ impl BudgetPlanner {
                                     current_value += winning_bet
                                         .checked_mul(total_pool)
                                         .and_then(|v| v.checked_div(outcome_total))
-                                        .unwrap_or(0);
+                                        .ok_or(ContractError::PoolTotalOverflow)?;
                                 }
                             }
                         }
@@ -296,7 +296,7 @@ impl BudgetPlanner {
             total_return
                 .checked_mul(10_000)
                 .and_then(|v| v.checked_div(total_invested))
-                .unwrap_or(0)
+                .ok_or(ContractError::PoolTotalOverflow)?
         } else {
             0
         };
@@ -338,7 +338,7 @@ impl BudgetPlanner {
 
         let excess_capacity = current_liquid
             .checked_sub(minimum_reserve)
-            .unwrap_or(0)
+            .ok_or(ContractError::PoolTotalOverflow)?
             .max(0);
 
         Ok(LiquidityProjection {
@@ -477,7 +477,7 @@ impl BudgetPlanner {
                     continue;
                 }
 
-                let total_pool = pool.total_a.checked_add(pool.total_b).unwrap_or(0);
+                let total_pool = pool.total_a.checked_add(pool.total_b).ok_or(ContractError::PoolTotalOverflow)?;
 
                 let eligible = match risk_tolerance {
                     RiskTolerance::Conservative => {
@@ -526,7 +526,7 @@ impl BudgetPlanner {
                         .persistent()
                         .get::<_, Pool>(&DataKey::Pool(pool_id))
                     {
-                        let size = pool.total_a.checked_add(pool.total_b).unwrap_or(0);
+                        let size = pool.total_a.checked_add(pool.total_b).ok_or(ContractError::PoolTotalOverflow)?;
                         total_size += size;
                         pool_sizes.push_back((pool_id, size));
                     }
@@ -546,12 +546,12 @@ impl BudgetPlanner {
                     let weight_pct = size
                         .checked_mul(10_000)
                         .and_then(|v| v.checked_div(total_size))
-                        .unwrap_or(0);
+                        .ok_or(ContractError::PoolTotalOverflow)?;
                     let allocated = total_amount
                         .checked_mul(weight_pct)
                         .and_then(|v| v.checked_div(10_000))
-                        .unwrap_or(0);
-                    let risk = Self::calculate_volatility(env, pool_id).unwrap_or(50);
+                        .ok_or(ContractError::PoolTotalOverflow)?;
+                    let risk = Self::volatility_or_default(env, pool_id)?;
 
                     allocations.push_back(PoolAllocation {
                         pool_id,
@@ -560,7 +560,7 @@ impl BudgetPlanner {
                         expected_return: allocated
                             .checked_mul(500)
                             .and_then(|v| v.checked_div(10_000))
-                            .unwrap_or(0),
+                            .ok_or(ContractError::PoolTotalOverflow)?,
                         risk_score: risk,
                     });
                 }
@@ -570,7 +570,7 @@ impl BudgetPlanner {
                 let mut total_inv_risk = 0i128;
                 let mut pool_risks = Vec::<(u32, i128)>::new(env);
                 for pool_id in pool_ids.iter() {
-                    let risk = Self::calculate_volatility(env, pool_id).unwrap_or(50);
+                    let risk = Self::volatility_or_default(env, pool_id)?;
                     let inv_risk = (101 - risk).max(1); // invert: low risk → high weight
                     total_inv_risk += inv_risk;
                     pool_risks.push_back((pool_id, inv_risk));
@@ -584,11 +584,11 @@ impl BudgetPlanner {
                     let weight_pct = inv_risk
                         .checked_mul(10_000)
                         .and_then(|v| v.checked_div(total_inv_risk))
-                        .unwrap_or(0);
+                        .ok_or(ContractError::PoolTotalOverflow)?;
                     let allocated = total_amount
                         .checked_mul(weight_pct)
                         .and_then(|v| v.checked_div(10_000))
-                        .unwrap_or(0);
+                        .ok_or(ContractError::PoolTotalOverflow)?;
                     let risk = 101 - inv_risk;
 
                     allocations.push_back(PoolAllocation {
@@ -598,7 +598,7 @@ impl BudgetPlanner {
                         expected_return: allocated
                             .checked_mul(500)
                             .and_then(|v| v.checked_div(10_000))
-                            .unwrap_or(0),
+                            .ok_or(ContractError::PoolTotalOverflow)?,
                         risk_score: risk,
                     });
                 }
@@ -609,7 +609,7 @@ impl BudgetPlanner {
                 let weight_pct = 10_000 / pool_ids.len() as i128;
 
                 for pool_id in pool_ids.iter() {
-                    let risk = Self::calculate_volatility(env, pool_id).unwrap_or(50);
+                    let risk = Self::volatility_or_default(env, pool_id)?;
                     allocations.push_back(PoolAllocation {
                         pool_id,
                         allocated_amount: per_pool,
@@ -617,7 +617,7 @@ impl BudgetPlanner {
                         expected_return: per_pool
                             .checked_mul(500)
                             .and_then(|v| v.checked_div(10_000))
-                            .unwrap_or(0),
+                            .ok_or(ContractError::PoolTotalOverflow)?,
                         risk_score: risk,
                     });
                 }
@@ -773,7 +773,7 @@ impl BudgetPlanner {
                     .get::<_, Pool>(&DataKey::Pool(pool_id))
                 {
                     if pool.status == PoolStatus::Open {
-                        let total_pool = pool.total_a.checked_add(pool.total_b).unwrap_or(0);
+                        let total_pool = pool.total_a.checked_add(pool.total_b).ok_or(ContractError::PoolTotalOverflow)?;
                         if total_pool > 0 && pool.expiry > now {
                             // Estimate return: assume fair odds, expected value is
                             // proportional to how close to expiry the pool is
@@ -786,7 +786,7 @@ impl BudgetPlanner {
                                     .total_bet
                                     .checked_mul(200) // 2% expected fee return
                                     .and_then(|v| v.checked_div(10_000))
-                                    .unwrap_or(0);
+                                    .ok_or(ContractError::PoolTotalOverflow)?;
                                 projected += fee_return;
                             }
                         }
@@ -805,7 +805,7 @@ impl BudgetPlanner {
             .current_value
             .checked_mul(1_000)
             .and_then(|v| v.checked_div(10_000))
-            .unwrap_or(0))
+            .ok_or(ContractError::PoolTotalOverflow)?)
     }
 
     fn calculate_optimal_fee(
@@ -860,13 +860,24 @@ impl BudgetPlanner {
         }
     }
 
+    /// Volatility for allocation scoring. A pool that cannot be read scores the
+    /// neutral 50; an arithmetic overflow is a real error and is propagated
+    /// rather than disguised as that neutral score.
+    fn volatility_or_default(env: &Env, pool_id: u32) -> Result<i128, ContractError> {
+        match Self::calculate_volatility(env, pool_id) {
+            Ok(v) => Ok(v),
+            Err(ContractError::PoolNotFound) => Ok(50),
+            Err(e) => Err(e),
+        }
+    }
+
     fn calculate_volatility(env: &Env, pool_id: u32) -> Result<i128, ContractError> {
         if let Some(pool) = env
             .storage()
             .persistent()
             .get::<_, Pool>(&DataKey::Pool(pool_id))
         {
-            let total = pool.total_a.checked_add(pool.total_b).unwrap_or(0);
+            let total = pool.total_a.checked_add(pool.total_b).ok_or(ContractError::PoolTotalOverflow)?;
             if total == 0 {
                 return Ok(50); // Unknown volatility for empty pool
             }
@@ -875,7 +886,7 @@ impl BudgetPlanner {
             let ratio = majority
                 .checked_mul(100)
                 .and_then(|v| v.checked_div(total))
-                .unwrap_or(50);
+                .ok_or(ContractError::PoolTotalOverflow)?;
             // ratio is 50-100; convert to 0-100 volatility score
             let volatility = ((ratio - 50) * 2).min(100);
             Ok(volatility)
@@ -890,7 +901,7 @@ impl BudgetPlanner {
             .persistent()
             .get::<_, Pool>(&DataKey::Pool(pool_id))
         {
-            let total = pool.total_a.checked_add(pool.total_b).unwrap_or(0);
+            let total = pool.total_a.checked_add(pool.total_b).ok_or(ContractError::PoolTotalOverflow)?;
             // Higher pool size and more participants = lower risk
             let size_factor = (total / 1_000_000).min(50);
             let participant_factor =
@@ -973,7 +984,7 @@ fn setup_test_pool(
         expiry,
         deposit_deadline: expiry,
         status: PoolStatus::Open,
-        cumulative_volume: total_a + total_b,
+        cumulative_volume: total_a.saturating_add(total_b),
         template_id: None,
     };
     env.storage()
@@ -1217,3 +1228,245 @@ fn test_liquid_balance_and_unlock_time_reads_positions() {
     });
 }
 
+
+// ============================================================================
+// Overflow is an error, never a zero (issue #1217)
+// ============================================================================
+
+/// Largest `allocated` for which `allocated * 500` still fits in `i128`.
+const MAX_ALLOCATION_BEFORE_OVERFLOW: i128 = i128::MAX / 500;
+
+fn pool_ids_of(env: &Env, ids: &[u32]) -> Vec<u32> {
+    let mut v = Vec::new(env);
+    for id in ids {
+        v.push_back(*id);
+    }
+    v
+}
+
+#[test]
+fn test_expected_return_overflow_is_an_error_not_zero() {
+    let env = Env::default();
+    let contract_id = test_contract(&env);
+    env.as_contract(&contract_id, || {
+        setup_test_pool(&env, 1, 1_000_000, 1_000_000, 5, 5_000_000);
+        let ids = pool_ids_of(&env, &[1]);
+
+        let result = BudgetPlanner::calculate_allocations(
+            &env,
+            &ids,
+            MAX_ALLOCATION_BEFORE_OVERFLOW + 1,
+            &AllocationStrategy::EqualWeight,
+        );
+        assert_eq!(result.err(), Some(ContractError::PoolTotalOverflow));
+    });
+}
+
+#[test]
+fn test_expected_return_is_five_percent_for_normal_allocations() {
+    let env = Env::default();
+    let contract_id = test_contract(&env);
+    env.as_contract(&contract_id, || {
+        setup_test_pool(&env, 1, 1_000_000, 1_000_000, 5, 5_000_000);
+        let ids = pool_ids_of(&env, &[1]);
+
+        let allocations = BudgetPlanner::calculate_allocations(
+            &env,
+            &ids,
+            1_000_000,
+            &AllocationStrategy::EqualWeight,
+        )
+        .unwrap();
+        assert_eq!(allocations.get(0).unwrap().expected_return, 50_000);
+    });
+}
+
+#[test]
+fn test_expected_return_boundary_and_zero_allocation() {
+    let env = Env::default();
+    let contract_id = test_contract(&env);
+    env.as_contract(&contract_id, || {
+        setup_test_pool(&env, 1, 1_000_000, 1_000_000, 5, 5_000_000);
+        let ids = pool_ids_of(&env, &[1]);
+
+        // Exactly the largest value that fits: still computed, not an error.
+        let at_limit = BudgetPlanner::calculate_allocations(
+            &env,
+            &ids,
+            MAX_ALLOCATION_BEFORE_OVERFLOW,
+            &AllocationStrategy::EqualWeight,
+        )
+        .unwrap();
+        assert_eq!(
+            at_limit.get(0).unwrap().expected_return,
+            (MAX_ALLOCATION_BEFORE_OVERFLOW * 500) / 10_000
+        );
+
+        // A genuine zero allocation is a genuine zero return, without error.
+        let zero = BudgetPlanner::calculate_allocations(&env, &ids, 0, &AllocationStrategy::EqualWeight)
+            .unwrap();
+        assert_eq!(zero.get(0).unwrap().expected_return, 0);
+    });
+}
+
+#[test]
+fn test_every_allocation_strategy_propagates_overflow() {
+    let env = Env::default();
+    let contract_id = test_contract(&env);
+    env.as_contract(&contract_id, || {
+        // Balanced pool so weights are finite; only the amount overflows.
+        setup_test_pool(&env, 1, 1_000_000, 1_000_000, 5, 5_000_000);
+        let ids = pool_ids_of(&env, &[1]);
+
+        for strategy in [
+            AllocationStrategy::EqualWeight,
+            AllocationStrategy::SizeWeighted,
+            AllocationStrategy::ReturnWeighted,
+            AllocationStrategy::RiskAdjusted,
+        ] {
+            let result = BudgetPlanner::calculate_allocations(
+                &env,
+                &ids,
+                MAX_ALLOCATION_BEFORE_OVERFLOW + 1,
+                &strategy,
+            );
+            assert_eq!(result.err(), Some(ContractError::PoolTotalOverflow));
+        }
+    });
+}
+
+#[test]
+fn test_size_weighted_overflow_in_pool_size_or_weight_is_an_error() {
+    let env = Env::default();
+    let contract_id = test_contract(&env);
+    env.as_contract(&contract_id, || {
+        // total_a + total_b overflows i128.
+        setup_test_pool(&env, 1, i128::MAX, 1, 5, 5_000_000);
+        let ids = pool_ids_of(&env, &[1]);
+        let sum_overflow = BudgetPlanner::calculate_allocations(
+            &env,
+            &ids,
+            1_000_000,
+            &AllocationStrategy::SizeWeighted,
+        );
+        assert_eq!(sum_overflow.err(), Some(ContractError::PoolTotalOverflow));
+
+        // size * 10_000 overflows i128 (the old code turned this weight into 0).
+        setup_test_pool(&env, 2, i128::MAX / 2, 0, 5, 5_000_000);
+        let ids = pool_ids_of(&env, &[2]);
+        let weight_overflow = BudgetPlanner::calculate_allocations(
+            &env,
+            &ids,
+            1_000_000,
+            &AllocationStrategy::SizeWeighted,
+        );
+        assert_eq!(weight_overflow.err(), Some(ContractError::PoolTotalOverflow));
+    });
+}
+
+#[test]
+fn test_pool_metrics_overflow_is_an_error() {
+    let env = Env::default();
+    let contract_id = test_contract(&env);
+    env.as_contract(&contract_id, || {
+        setup_test_pool(&env, 1, i128::MAX, 1, 5, 5_000_000);
+
+        assert_eq!(
+            BudgetPlanner::calculate_volatility(&env, 1).err(),
+            Some(ContractError::PoolTotalOverflow)
+        );
+        assert_eq!(
+            BudgetPlanner::calculate_liquidity_risk(&env, 1).err(),
+            Some(ContractError::PoolTotalOverflow)
+        );
+        // An overflow is not disguised as the neutral volatility score...
+        assert_eq!(
+            BudgetPlanner::volatility_or_default(&env, 1).err(),
+            Some(ContractError::PoolTotalOverflow)
+        );
+        // ...while a pool that simply does not exist still scores the neutral 50.
+        assert_eq!(BudgetPlanner::volatility_or_default(&env, 99).unwrap(), 50);
+    });
+}
+
+#[test]
+fn test_projection_and_reserve_overflow_are_errors() {
+    let env = Env::default();
+    let lender = Address::generate(&env);
+    let contract_id = test_contract(&env);
+    let now = 2_000_000u64;
+    env.ledger().set_timestamp(now);
+
+    env.as_contract(&contract_id, || {
+        // Open pool whose total overflows, with a position in it and an expiry
+        // inside the 7 day window.
+        setup_test_pool(&env, 1, i128::MAX, 1, 5, now + 3_600);
+        setup_user_bet(&env, 1, &lender, 1_000, 0);
+        assert_eq!(
+            BudgetPlanner::project_returns(&env, &lender, 7).err(),
+            Some(ContractError::PoolTotalOverflow)
+        );
+    });
+
+    let lender2 = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        // A position so large that 10% of it overflows.
+        setup_test_pool(&env, 2, 1_000, 1_000, 5, now + 3_600);
+        setup_user_bet(&env, 2, &lender2, i128::MAX / 1_000 + 1, 0);
+        assert_eq!(
+            BudgetPlanner::calculate_minimum_reserve(&env, &lender2).err(),
+            Some(ContractError::PoolTotalOverflow)
+        );
+    });
+}
+
+#[test]
+fn test_normal_projection_and_reserve_are_unchanged() {
+    let env = Env::default();
+    let lender = Address::generate(&env);
+    let contract_id = test_contract(&env);
+    let now = 2_000_000u64;
+    env.ledger().set_timestamp(now);
+
+    env.as_contract(&contract_id, || {
+        setup_test_pool(&env, 1, 5_000_000, 5_000_000, 5, now + 3_600);
+        setup_user_bet(&env, 1, &lender, 1_000_000, 0);
+
+        // 2% fee return on a 1,000,000 position that settles inside the window.
+        assert_eq!(BudgetPlanner::project_returns(&env, &lender, 7).unwrap(), 20_000);
+        // 10% of the 1,000,000 portfolio value.
+        assert_eq!(BudgetPlanner::calculate_minimum_reserve(&env, &lender).unwrap(), 100_000);
+    });
+}
+
+#[test]
+fn test_no_checked_arithmetic_is_swallowed_in_the_planner() {
+    // Structural guard for the acceptance criterion "every checked_* chain ends
+    // in a propagated error": a checked_* call followed by unwrap_or(<number>)
+    // within a few lines is exactly the pattern that turned overflow into a value.
+    let source = include_str!("budget_planner.rs");
+    let production = source.split("// Tests\n").next().unwrap();
+
+    // Lines since the most recent `checked_*` call, and whether a storage read
+    // has appeared since (a storage `.get(..).unwrap_or(0)` default is fine).
+    let mut since_checked: Option<usize> = None;
+    let mut storage_read_since = false;
+    for (i, line) in production.lines().enumerate() {
+        if line.contains("checked_") {
+            since_checked = Some(0);
+            storage_read_since = false;
+        } else if let Some(n) = since_checked {
+            since_checked = if n >= 4 { None } else { Some(n + 1) };
+        }
+        if line.contains(".get(") || line.contains(".get::<") || line.contains("storage()") {
+            storage_read_since = true;
+        }
+        if line.contains(".unwrap_or(") && since_checked.is_some() && !storage_read_since {
+            panic!(
+                "checked arithmetic swallowed by unwrap_or near budget_planner.rs line {}: {}",
+                i + 1,
+                line.trim()
+            );
+        }
+    }
+}

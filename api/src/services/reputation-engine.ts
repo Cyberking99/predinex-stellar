@@ -9,6 +9,31 @@ import {
   UserReputationDto,
 } from '../types/index.js';
 
+/**
+ * Most volume a preview will credit for a user with no recorded borrow history.
+ * The preview cannot see a real repayment, so without a ceiling any sufficiently
+ * large caller-supplied number would reach the maximum bonus. 100,000 units
+ * yields at most +10 of the +50 maximum; only a user's actual outstanding debt
+ * (below) can raise the ceiling further.
+ */
+export const UNVERIFIED_PREVIEW_VOLUME_CAP = 100_000n;
+
+/** Base units of repaid volume per bonus point, and the largest bonus. */
+const VOLUME_PER_BONUS_POINT = 10_000n;
+const MAX_VOLUME_BONUS = 50n;
+
+/** Exact non-negative integer parse; anything else is not a usable amount. */
+function parseAmountExact(value: string | undefined): bigint | undefined {
+  if (value === undefined) return 0n;
+  const trimmed = value.trim();
+  if (trimmed === '') return 0n;
+  return /^\d+$/.test(trimmed) ? BigInt(trimmed) : undefined;
+}
+
+function toBigInt(value: string): bigint {
+  return /^\d+$/.test(value) ? BigInt(value) : 0n;
+}
+
 export class ReputationEngine {
   private profiles = new Map<string, UserReputationDto>();
 
@@ -58,10 +83,26 @@ export class ReputationEngine {
     const currentTier = profile.tier;
 
     let delta = 0;
+    let volumeCounted: string | undefined;
+    let volumeCapped: boolean | undefined;
     switch (request.action) {
       case 'OnTimeRepay': {
-        const volume = parseFloat(request.amount || '0');
-        const volBonus = Math.min(50, Math.floor(volume / 10_000));
+        // The amount is caller-supplied and unverified, so it is (1) parsed
+        // exactly (no float precision loss above 2^53) and (2) never credited
+        // beyond what the user could really repay: their outstanding debt when
+        // they have borrow history, otherwise a small fixed ceiling.
+        const supplied = parseAmountExact(request.amount);
+        const borrowed = toBigInt(profile.totalBorrowedVolume);
+        const outstanding = borrowed > 0n ? this.max0(borrowed - toBigInt(profile.totalRepaidVolume)) : undefined;
+        const ceiling = outstanding ?? UNVERIFIED_PREVIEW_VOLUME_CAP;
+
+        const usable = supplied ?? 0n; // a malformed amount earns no bonus
+        const counted = usable < ceiling ? usable : ceiling;
+        const bonus = counted / VOLUME_PER_BONUS_POINT;
+        const volBonus = Number(bonus < MAX_VOLUME_BONUS ? bonus : MAX_VOLUME_BONUS);
+
+        volumeCounted = counted.toString();
+        volumeCapped = supplied === undefined || counted < usable;
         delta = 15 + volBonus;
         break;
       }
@@ -80,6 +121,8 @@ export class ReputationEngine {
     const projectedTier = this.scoreToTier(projectedScore);
 
     return {
+      isEstimate: true,
+      ...(volumeCounted !== undefined ? { volumeCounted, volumeCapped } : {}),
       currentScore,
       currentTier,
       projectedScore,
@@ -88,6 +131,10 @@ export class ReputationEngine {
       unlockedLtvBoostBps: this.tierToLtvBoost(projectedTier),
       unlockedRateDiscountBps: this.tierToRateDiscount(projectedTier),
     };
+  }
+
+  private max0(value: bigint): bigint {
+    return value > 0n ? value : 0n;
   }
 
   public getLeaderboard(limit: number = 20): UserReputationDto[] {

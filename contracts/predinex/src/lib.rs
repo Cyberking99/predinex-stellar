@@ -1064,6 +1064,12 @@ pub enum DataKey {
     ReferralBalance(Address),
     /// #420 — Total volume generated through referrals across all referrers.
     TotalReferralVolume,
+    /// #1232 — Cumulative amount already paid out of a multi-asset pool in a
+    /// specific token (in that token's own units). Recorded so the final-claim
+    /// dust sweep can bound itself to the settling pool's own remainder instead
+    /// of reading the contract-wide balance, which includes every other pool's
+    /// escrow.
+    PoolTokenPaidOut(u32, Address),
     /// Cumulative total winnings claimed by a user across all pools.
     UserTotalClaimed(Address),
     /// Claim history entries for a user (capped ring buffer).
@@ -9615,15 +9621,38 @@ impl PredinexContract {
                 if net_t <= 0 {
                     continue;
                 }
-                let token_bal =
-                    token::Client::new(&env, &tok).balance(&env.current_contract_address());
-                let dust = if token_bal > fee_t {
-                    token_bal
-                        .checked_sub(fee_t)
-                        .ok_or(ContractError::PoolTotalOverflow)?
-                } else {
-                    0
+                // #1232 — The dust is this pool's own unspent remainder, never
+                // the contract-wide balance. `net_t` is what the pool was
+                // deposited and owes; `paid_t` is what it has already paid out
+                // of it. The difference is bounded by the pool's own recorded
+                // numbers, so the sweep cannot reach another pool's escrow,
+                // unclaimed single-asset stakes, LP principal or treasury
+                // reserve — all of which the contract balance also contained.
+                let paid_t: i128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::PoolTokenPaidOut(pool_id, tok.clone()))
+                    .unwrap_or(0);
+                let dust = match net_t.checked_sub(paid_t) {
+                    Ok(remainder) if remainder > 0 => remainder,
+                    // Over-paid, or nothing left: there is no dust to collect.
+                    _ => 0,
                 };
+                // #1232 — Record what this pool has paid out in this token. The
+                // final-claim dust sweep subtracts this to find the pool's own
+                // remainder; without it the sweep has no way to tell its dust
+                // from another pool's escrow.
+                let paid_key = DataKey::PoolTokenPaidOut(pool_id, tok.clone());
+                let paid_prev: i128 = env.storage().persistent().get(&paid_key).unwrap_or(0);
+                let paid_next = paid_prev
+                    .checked_add(payout_t)
+                    .ok_or(ContractError::PoolTotalOverflow)?;
+                env.storage().persistent().set(&paid_key, &paid_next);
+                env.storage().persistent().extend_ttl(
+                    &paid_key,
+                    POOL_BUMP_THRESHOLD,
+                    POOL_BUMP_TARGET,
+                );
                 if dust > 0 {
                     token::Client::new(&env, &tok).transfer(
                         &env.current_contract_address(),
@@ -9682,6 +9711,15 @@ impl PredinexContract {
 
         let history_key = DataKey::UserClaimHistory(analytics_user.clone());
         let mut history: Vec<UserClaimEntry> = env
+                    // Only sweep what the pool itself still holds for this
+                    // token, so the recorded deposit is reduced in step.
+                    let on_hand = token::Client::new(&env, &tok)
+                        .balance(&env.current_contract_address());
+                    let sweepable = if dust <= on_hand { dust } else { on_hand };
+                    if sweepable <= 0 {
+                        continue;
+                    }
+                    let dust = sweepable;
             .storage()
             .persistent()
             .get(&history_key)
@@ -9699,6 +9737,34 @@ impl PredinexContract {
         }
         env.storage().persistent().set(&history_key, &history);
         env.storage()
+
+                    // #1232 — Reflect the sweep in the pool's own ledger, not
+                    // only the treasury's. The recorded deposit and the
+                    // paid-out total are both advanced by the swept amount, so
+                    // the pool's books balance after the sweep and a later
+                    // accounting query cannot still show the dust as
+                    // outstanding. Crediting the treasury alone reported the
+                    // transfer as protocol revenue with no matching pool entry.
+                    let paid_key = DataKey::PoolTokenPaidOut(pool_id, tok.clone());
+                    let paid_after: i128 = paid_t
+                        .checked_add(dust)
+                        .ok_or(ContractError::PoolTotalOverflow)?;
+                    env.storage().persistent().set(&paid_key, &paid_after);
+                    env.storage().persistent().extend_ttl(
+                        &paid_key,
+                        POOL_BUMP_THRESHOLD,
+                        POOL_BUMP_TARGET,
+                    );
+                    let deposit_key = DataKey::PoolTokenDeposit(pool_id, tok.clone());
+                    let deposit_after = deposit
+                        .checked_sub(dust)
+                        .ok_or(ContractError::PoolTotalOverflow)?;
+                    env.storage().persistent().set(&deposit_key, &deposit_after);
+                    env.storage().persistent().extend_ttl(
+                        &deposit_key,
+                        POOL_BUMP_THRESHOLD,
+                        POOL_BUMP_TARGET,
+                    );
             .persistent()
             .extend_ttl(&history_key, POOL_BUMP_THRESHOLD, POOL_BUMP_TARGET);
         env.storage()

@@ -8681,7 +8681,7 @@ impl PredinexContract {
 
         // Credit referral reward if bps > 0.
         if bps > 0 {
-            let reward = (amount * bps as i128) / 10_000;
+            let reward = amount`n                .checked_mul(bps as i128)`n                .ok_or(ContractError::TreasuryOverflow)?`n                / 10_000;
             if reward > 0 {
                 let key = DataKey::ReferralBalance(referrer.clone());
                 let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);

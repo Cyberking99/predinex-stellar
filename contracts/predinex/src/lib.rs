@@ -1208,6 +1208,12 @@ const MAX_OUTCOME_COUNT: u32 = 20;
 const MAX_METADATA_URI_LENGTH: u32 = 256;
 const MAX_SCHEDULE_POOL_HORIZON_SECS: u64 = 30 * 24 * 60 * 60;
 const SCHEDULED_CLAIM_EXECUTION_CAP: u32 = 10;
+/// #1236 — Hard cap on ids scanned per `execute_scheduled_claims` call.
+/// The execution cap alone doesn't bound work: entries that fail (frozen
+/// pool, unsettled, etc.) are skipped without counting toward it, so a run
+/// of permanently-failing ids let the scan continue unbounded. This bounds
+/// the scan independently of how many claims actually succeed.
+const SCHEDULED_CLAIM_SCAN_CAP: u32 = 200;
 
 /// Contract-wide minimum bet amount (1 stroop).
 const MIN_BET_AMOUNT: i128 = 1;
@@ -1372,6 +1378,11 @@ pub enum ContractError {
     /// bet was removed). Returning page 1 in that case would silently duplicate
     /// data, so the call fails instead.
     InvalidLeaderboardCursor = 89,
+    /// #1237 — `override_pool_cooling` was called on a pool with no active
+    /// automatic cooling lock (no `PoolCoolingUntil` entry). A manually
+    /// frozen pool (via `freeze_pool`) must be unfrozen by the freeze admin
+    /// through `unfreeze_pool`, not bypassed via the treasury-recipient role.
+    PoolCoolingNotActive = 90,
 }
 
 /// #176 — Settlement source tag indicating who initiated pool settlement.
@@ -5533,8 +5544,10 @@ impl PredinexContract {
             .ok_or(ContractError::InvalidOutcome)?;
         let total_pool_volume = Self::sum_totals(&totals)?;
         // Resolve the fee against any configured volume tiers (flat fee when
-        // none apply). When tiers are configured we lock the resolved bps for
-        // this pool so winner claims deduct exactly the fee fixed here.
+        // none apply), and always lock the resolved bps for this pool so
+        // winner claims deduct exactly the fee fixed here — including
+        // untiered pools, which would otherwise fall back to the live,
+        // mutable `ProtocolFee` at claim time (#1235).
         let fee_bps = Self::resolve_fee_bps_for_volume(env, total_pool_volume);
         let fee_amount = total_pool_volume
         // #1233 — Refuse to resolve a market nobody backed. Only the index was
@@ -5549,16 +5562,14 @@ impl PredinexContract {
             .checked_mul(fee_bps as i128)
             .ok_or(ContractError::PoolTotalOverflow)?
             / 10000;
-        if env.storage().persistent().has(&DataKey::VolumeFeeTiers) {
-            env.storage()
-                .persistent()
-                .set(&DataKey::PoolFeeBps(pool_id), &fee_bps);
-            env.storage().persistent().extend_ttl(
-                &DataKey::PoolFeeBps(pool_id),
-                POOL_BUMP_THRESHOLD,
-                POOL_BUMP_TARGET,
-            );
-        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::PoolFeeBps(pool_id), &fee_bps);
+        env.storage().persistent().extend_ttl(
+            &DataKey::PoolFeeBps(pool_id),
+            POOL_BUMP_THRESHOLD,
+            POOL_BUMP_TARGET,
+        );
 
         env.storage()
             .persistent()
@@ -6547,7 +6558,12 @@ impl PredinexContract {
         let mut results = Vec::new(&env);
         let mut saw_not_yet_due = false;
         let mut id = 1u32;
-        while id < next_id && results.len() < SCHEDULED_CLAIM_EXECUTION_CAP {
+        let mut scanned = 0u32;
+        while id < next_id
+            && results.len() < SCHEDULED_CLAIM_EXECUTION_CAP
+            && scanned < SCHEDULED_CLAIM_SCAN_CAP
+        {
+            scanned += 1;
             let key = DataKey::ScheduledClaim(id);
             if let Some(mut entry) = env.storage().persistent().get::<_, ScheduledClaim>(&key) {
                 if entry.status == ScheduledClaimStatus::Pending {
@@ -7226,6 +7242,12 @@ impl PredinexContract {
     }
 
     /// Treasury admin override for automatic cooling locks.
+    ///
+    /// Only lifts a pool's *automatic* large-bet cooling freeze (the one set
+    /// alongside a `PoolCoolingUntil` entry). A pool manually frozen via
+    /// `freeze_pool` has no `PoolCoolingUntil` entry and must be unfrozen by
+    /// the freeze admin through `unfreeze_pool` — this call must not be able
+    /// to bypass that by unfreezing it via the treasury-recipient role.
     pub fn override_pool_cooling(
         env: Env,
         caller: Address,
@@ -7239,6 +7261,16 @@ impl PredinexContract {
             .persistent()
             .get::<_, Pool>(&DataKey::Pool(pool_id))
             .ok_or(ContractError::PoolNotFound)?;
+
+        if env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::PoolCoolingUntil(pool_id))
+            .is_none()
+        {
+            return Err(ContractError::PoolCoolingNotActive);
+        }
+
         if pool.status == PoolStatus::Frozen {
             pool.status = PoolStatus::Open;
             env.storage()
@@ -7974,6 +8006,8 @@ impl PredinexContract {
         templates
     }
 
+    /// Return public pool templates (up to 50). Callable by anyone.
+    /// Read-only.
     pub fn get_public_templates(env: Env) -> Vec<PoolTemplate> {
         let next_id = env
             .storage()
@@ -7982,7 +8016,7 @@ impl PredinexContract {
             .unwrap_or(1);
         let mut public_templates = Vec::new(&env);
         let mut id = 1u32;
-        while id < next_id {
+        while id < next_id && public_templates.len() < 50 {
             if let Some(t) = env
                 .storage()
                 .persistent()

@@ -5549,7 +5549,6 @@ impl PredinexContract {
         // untiered pools, which would otherwise fall back to the live,
         // mutable `ProtocolFee` at claim time (#1235).
         let fee_bps = Self::resolve_fee_bps_for_volume(env, total_pool_volume);
-        let fee_amount = total_pool_volume
         // #1233 — Refuse to resolve a market nobody backed. Only the index was
         // range-checked, so a pool whose only bettor staked outcome 0 could be
         // settled to outcome 1: `claim_winnings` then returned `NoWinningBets`
@@ -5559,6 +5558,7 @@ impl PredinexContract {
         if winning_side_total <= 0 {
             return Err(ContractError::NoWinningBets);
         }
+        let fee_amount = total_pool_volume
             .checked_mul(fee_bps as i128)
             .ok_or(ContractError::PoolTotalOverflow)?
             / 10000;
@@ -5973,6 +5973,12 @@ impl PredinexContract {
         );
 
         // Transfer original stake back — no fee deducted.
+        let token_address = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Token)
+            .ok_or(ContractError::NotInitialized)?;
+        let token_client = token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &user, &refund);
 
         // Remove bet record to prevent double-claim.
@@ -6315,6 +6321,12 @@ impl PredinexContract {
             .get::<_, Address>(&DataKey::Token)
             .ok_or(ContractError::NotInitialized)?;
         let token_client = token::Client::new(env, &token_address);
+        // #1231 — Surface a shortfall as a typed error before transferring.
+        // Check the balance before making the external transfer.
+        let available = token_client.balance(&env.current_contract_address());
+        if available < winnings {
+            return Err(ContractError::BalanceShortfall);
+        }
         token_client.transfer(&env.current_contract_address(), &user, &winnings);
 
         // Step 4: emit events in final committed state.
@@ -6336,16 +6348,6 @@ impl PredinexContract {
         let prev_total: i128 = env.storage().persistent().get(&total_key).unwrap_or(0);
         let next_total = prev_total
             .checked_add(winnings)
-        // #1231 — Surface a shortfall as a typed error instead of letting the
-        // transfer revert. `compute_winnings` is derived from recorded totals;
-        // if those ever exceed what the contract actually holds (a refund path
-        // that moved tokens without decrementing them, a mis-scaled pool), the
-        // caller gets `BalanceShortfall` naming the cause rather than a bare
-        // host revert that is indistinguishable from any other failure.
-        let available = token_client.balance(&env.current_contract_address());
-        if available < winnings {
-            return Err(ContractError::BalanceShortfall);
-        }
             .ok_or(ContractError::PoolTotalOverflow)?;
         env.storage().persistent().set(&total_key, &next_total);
 
@@ -9665,6 +9667,20 @@ impl PredinexContract {
                     &user,
                     &payout_t,
                 );
+                // Record each token payout so the final-claim sweep can
+                // calculate this pool's remaining dust without using the
+                // contract-wide token balance.
+                let paid_key = DataKey::PoolTokenPaidOut(pool_id, tok.clone());
+                let paid_prev: i128 = env.storage().persistent().get(&paid_key).unwrap_or(0);
+                let paid_next = paid_prev
+                    .checked_add(payout_t)
+                    .ok_or(ContractError::PoolTotalOverflow)?;
+                env.storage().persistent().set(&paid_key, &paid_next);
+                env.storage().persistent().extend_ttl(
+                    &paid_key,
+                    POOL_BUMP_THRESHOLD,
+                    POOL_BUMP_TARGET,
+                );
                 total_norm_paid = total_norm_paid
                     .checked_add(payout_t)
                     .ok_or(ContractError::PoolTotalOverflow)?;
@@ -9726,40 +9742,53 @@ impl PredinexContract {
                     .get(&DataKey::PoolTokenPaidOut(pool_id, tok.clone()))
                     .unwrap_or(0);
                 let dust = match net_t.checked_sub(paid_t) {
-                    Ok(remainder) if remainder > 0 => remainder,
+                    Some(remainder) if remainder > 0 => remainder,
                     // Over-paid, or nothing left: there is no dust to collect.
                     _ => 0,
                 };
-                // #1232 — Record what this pool has paid out in this token. The
-                // final-claim dust sweep subtracts this to find the pool's own
-                // remainder; without it the sweep has no way to tell its dust
-                // from another pool's escrow.
-                let paid_key = DataKey::PoolTokenPaidOut(pool_id, tok.clone());
-                let paid_prev: i128 = env.storage().persistent().get(&paid_key).unwrap_or(0);
-                let paid_next = paid_prev
-                    .checked_add(payout_t)
-                    .ok_or(ContractError::PoolTotalOverflow)?;
-                env.storage().persistent().set(&paid_key, &paid_next);
-                env.storage().persistent().extend_ttl(
-                    &paid_key,
-                    POOL_BUMP_THRESHOLD,
-                    POOL_BUMP_TARGET,
-                );
-                if dust > 0 {
+                // Only sweep what this pool's token balance can cover.
+                let on_hand = token::Client::new(&env, &tok)
+                    .balance(&env.current_contract_address());
+                let sweepable = dust.min(on_hand);
+                if sweepable > 0 {
                     token::Client::new(&env, &tok).transfer(
                         &env.current_contract_address(),
                         &treasury_recipient,
-                        &dust,
+                        &sweepable,
                     );
                     let credit_key = DataKey::PoolTreasuryCredited(pool_id);
                     let prev_credit: i128 =
                         env.storage().persistent().get(&credit_key).unwrap_or(0);
                     let next_credit = prev_credit
-                        .checked_add(dust)
+                        .checked_add(sweepable)
                         .ok_or(ContractError::TreasuryOverflow)?;
                     env.storage().persistent().set(&credit_key, &next_credit);
                     env.storage().persistent().extend_ttl(
                         &credit_key,
+                        POOL_BUMP_THRESHOLD,
+                        POOL_BUMP_TARGET,
+                    );
+                    // Keep the pool's paid-out and deposit ledgers balanced
+                    // after transferring its final-claim dust.
+                    let paid_key = DataKey::PoolTokenPaidOut(pool_id, tok.clone());
+                    let paid_after = paid_t
+                        .checked_add(sweepable)
+                        .ok_or(ContractError::PoolTotalOverflow)?;
+                    env.storage().persistent().set(&paid_key, &paid_after);
+                    env.storage().persistent().extend_ttl(
+                        &paid_key,
+                        POOL_BUMP_THRESHOLD,
+                        POOL_BUMP_TARGET,
+                    );
+                    let deposit_key = DataKey::PoolTokenDeposit(pool_id, tok.clone());
+                    let deposit_after = deposit
+                        .checked_sub(sweepable)
+                        .ok_or(ContractError::PoolTotalOverflow)?;
+                    env.storage()
+                        .persistent()
+                        .set(&deposit_key, &deposit_after);
+                    env.storage().persistent().extend_ttl(
+                        &deposit_key,
                         POOL_BUMP_THRESHOLD,
                         POOL_BUMP_TARGET,
                     );
@@ -9803,15 +9832,6 @@ impl PredinexContract {
 
         let history_key = DataKey::UserClaimHistory(analytics_user.clone());
         let mut history: Vec<UserClaimEntry> = env
-                    // Only sweep what the pool itself still holds for this
-                    // token, so the recorded deposit is reduced in step.
-                    let on_hand = token::Client::new(&env, &tok)
-                        .balance(&env.current_contract_address());
-                    let sweepable = if dust <= on_hand { dust } else { on_hand };
-                    if sweepable <= 0 {
-                        continue;
-                    }
-                    let dust = sweepable;
             .storage()
             .persistent()
             .get(&history_key)
@@ -9829,34 +9849,6 @@ impl PredinexContract {
         }
         env.storage().persistent().set(&history_key, &history);
         env.storage()
-
-                    // #1232 — Reflect the sweep in the pool's own ledger, not
-                    // only the treasury's. The recorded deposit and the
-                    // paid-out total are both advanced by the swept amount, so
-                    // the pool's books balance after the sweep and a later
-                    // accounting query cannot still show the dust as
-                    // outstanding. Crediting the treasury alone reported the
-                    // transfer as protocol revenue with no matching pool entry.
-                    let paid_key = DataKey::PoolTokenPaidOut(pool_id, tok.clone());
-                    let paid_after: i128 = paid_t
-                        .checked_add(dust)
-                        .ok_or(ContractError::PoolTotalOverflow)?;
-                    env.storage().persistent().set(&paid_key, &paid_after);
-                    env.storage().persistent().extend_ttl(
-                        &paid_key,
-                        POOL_BUMP_THRESHOLD,
-                        POOL_BUMP_TARGET,
-                    );
-                    let deposit_key = DataKey::PoolTokenDeposit(pool_id, tok.clone());
-                    let deposit_after = deposit
-                        .checked_sub(dust)
-                        .ok_or(ContractError::PoolTotalOverflow)?;
-                    env.storage().persistent().set(&deposit_key, &deposit_after);
-                    env.storage().persistent().extend_ttl(
-                        &deposit_key,
-                        POOL_BUMP_THRESHOLD,
-                        POOL_BUMP_TARGET,
-                    );
             .persistent()
             .extend_ttl(&history_key, POOL_BUMP_THRESHOLD, POOL_BUMP_TARGET);
         env.storage()

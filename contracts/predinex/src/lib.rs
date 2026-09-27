@@ -5529,6 +5529,15 @@ impl PredinexContract {
         // this pool so winner claims deduct exactly the fee fixed here.
         let fee_bps = Self::resolve_fee_bps_for_volume(env, total_pool_volume);
         let fee_amount = total_pool_volume
+        // #1233 — Refuse to resolve a market nobody backed. Only the index was
+        // range-checked, so a pool whose only bettor staked outcome 0 could be
+        // settled to outcome 1: `claim_winnings` then returned `NoWinningBets`
+        // for everyone, every exit path requires a non-settled status, and a
+        // settlement fee was recorded that nobody could ever collect. The
+        // creator could lock every bettor's deposit permanently.
+        if winning_side_total <= 0 {
+            return Err(ContractError::NoWinningBets);
+        }
             .checked_mul(fee_bps as i128)
             .ok_or(ContractError::PoolTotalOverflow)?
             / 10000;

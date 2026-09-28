@@ -1822,12 +1822,15 @@ pub struct UserPoolSnapshot {
 ///
 /// Variants
 /// --------
-/// - `Unclaimable`  – pool is not yet settled (or is frozen/disputed/cancelled);
-///                    no payout is available regardless of the user's position.
-/// - `NeverBet`     – pool is settled but the user has no position (or already claimed).
-/// - `NotEligible`  – pool is settled; user bet on the losing side.
+/// - `Unclaimable`     – pool is not yet settled (or is frozen/disputed/cancelled);
+///                       no payout is available regardless of the user's position.
+/// - `NeverBet`        – pool is settled but the user has no position (or already claimed).
+/// - `NotEligible`     – pool is settled; user bet on the losing side.
 /// - `Claimable(i128)` – pool is settled; user bet on the winning side and the
-///                    value equals exactly what `claim_winnings` would transfer.
+///                       value equals exactly what `claim_winnings` would transfer.
+/// - `ArithmeticError` – pool is settled and the user holds a winning position, but
+///                       the payout arithmetic overflowed; the user should retry later
+///                       or fall back to `claim_winnings` directly. (#1260)
 #[derive(Clone, PartialEq, Debug)]
 #[contracttype]
 pub enum ClaimPreview {
@@ -1839,6 +1842,10 @@ pub enum ClaimPreview {
     NotEligible,
     /// User bet on the winning side; value is the exact transferable amount.
     Claimable(i128),
+    /// #1260 — The payout arithmetic overflowed; the preview cannot be computed.
+    /// This does NOT mean the user cannot claim — `claim_winnings` propagates the
+    /// error so the caller can handle it explicitly.
+    ArithmeticError,
 }
 
 /// #158 — Per-pool payout tracking state for reconciliation.
@@ -8673,10 +8680,16 @@ impl PredinexContract {
         }
         let total_pool_balance = match Self::sum_totals(&totals) {
             Ok(total) => total,
-            Err(_) => return ClaimPreview::Unclaimable,
+            // #1260 — overflow is NOT the same as "unclaimable": the user holds
+            // a winning bet and claim_winnings would propagate this as an error.
+            // Return ArithmeticError so the UI knows to show "unavailable" rather
+            // than "nothing to claim".
+            Err(_) => return ClaimPreview::ArithmeticError,
         };
         if total_pool_balance == 0 {
-            return ClaimPreview::Claimable(0);
+            // Pool balance should never reach zero for a settled pool with a
+            // winning position, but if it does the payout is genuinely zero.
+            return ClaimPreview::Unclaimable;
         }
         let fee_bps = Self::pool_effective_fee_bps(&env, pool_id);
 

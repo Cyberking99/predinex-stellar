@@ -870,9 +870,10 @@ fn l3_rapid_interleaved_bets_then_batch_claim_consistent() {
         }
         let mut ids = Vec::new(&t.env);
         ids.push_back(pool_id);
-        let entries = t.client.claim_all_winnings(u, &ids);
-        assert_eq!(entries.len(), 1, "one entry per claimable pool");
-        let entry = entries.get(0).unwrap();
+        let batch = t.client.claim_all_winnings(u, &ids);
+        assert_eq!(batch.results.len(), 1, "one entry per claimable pool");
+        let entry = batch.results.get(0).unwrap();
+        assert_eq!(entry.error_code, 0, "claim must succeed");
         let expected = (expected_a_stake[i] * net) / total_a;
         assert_eq!(
             entry.amount, expected,

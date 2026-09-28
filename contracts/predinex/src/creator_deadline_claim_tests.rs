@@ -263,9 +263,11 @@ fn claim_all_winnings_returns_per_pool_amounts() {
     let results = s.client.claim_all_winnings(&winner, &ids);
     let after = s.token.balance(&winner);
 
-    assert_eq!(results.len(), 1);
-    let entry = results.get(0).unwrap();
+    assert_eq!(results.results.len(), 1);
+    assert!(!results.truncated);
+    let entry = results.results.get(0).unwrap();
     assert_eq!(entry.pool_id, pool_a);
+    assert_eq!(entry.error_code, 0);
     assert!(entry.amount > 0);
     // Returned amount matches the tokens actually received.
     assert_eq!(entry.amount, after - before);

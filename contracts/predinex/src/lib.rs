@@ -9170,6 +9170,10 @@ impl PredinexContract {
 
     /// Set per-pool, per-token bet limits for a multi-asset pool.
     ///
+    /// Both limits are denominated in **base-token units** and are compared
+    /// against the bet amount after it has been normalised with the token's
+    /// exchange rate — not against the raw amount of `token` (#1251).
+    ///
     /// `min_bet = 0` disables the lower bound; `max_bet = 0` disables the upper
     /// bound. Only callable by the treasury recipient.
     pub fn set_pool_token_bet_limits(
@@ -9242,11 +9246,6 @@ impl PredinexContract {
             return Err(ContractError::InvalidBetAmount);
         }
 
-        // #673 — Enforce contract-wide minimum bet to prevent dust.
-        if amount < MIN_BET_AMOUNT {
-            return Err(ContractError::BetBelowMinBet);
-        }
-
         // Validate referrer is not the user themselves.
         if let Some(ref ref_addr) = referrer {
             if ref_addr == &user {
@@ -9294,17 +9293,23 @@ impl PredinexContract {
             .ok_or(ContractError::PoolTotalOverflow)?
             / 10_000;
 
-        if normalized <= 0 {
-            return Err(ContractError::InvalidBetAmount);
+        // #673 / #1251 — Enforce the contract-wide dust guard. MIN_BET_AMOUNT is
+        // denominated in base-token units, so it must be compared against the
+        // normalised amount: a raw foreign amount says nothing about its value
+        // when the bet token has different decimals or a different price.
+        if normalized < MIN_BET_AMOUNT {
+            return Err(ContractError::BetBelowMinBet);
         }
 
-        // Per-token min/max limits (checked against raw amount, not normalised).
+        // #1251 — Per-token min/max limits are denominated in base-token units
+        // and checked against the normalised amount, so operators configure
+        // every token's limits on the same scale as the pool-wide limits.
         let min_bet: i128 = env
             .storage()
             .persistent()
             .get(&DataKey::PoolTokenMinBet(pool_id, bet_token.clone()))
             .unwrap_or(0);
-        if min_bet > 0 && amount < min_bet {
+        if min_bet > 0 && normalized < min_bet {
             return Err(ContractError::BetBelowMinBet);
         }
         let max_bet: i128 = env
@@ -9312,7 +9317,7 @@ impl PredinexContract {
             .persistent()
             .get(&DataKey::PoolTokenMaxBet(pool_id, bet_token.clone()))
             .unwrap_or(0);
-        if max_bet > 0 && amount > max_bet {
+        if max_bet > 0 && normalized > max_bet {
             return Err(ContractError::BetAboveMaxBet);
         }
 
@@ -10202,11 +10207,15 @@ impl PredinexContract {
     ) -> Result<u32, ContractError> {
         caller.require_auth();
         Self::require_treasury_recipient(&env, &caller)?;
-        let _pool = env
+        let pool = env
             .storage()
             .persistent()
             .get::<_, Pool>(&DataKey::Pool(source_pool_id))
             .ok_or(ContractError::PoolNotFound)?;
+        // #1250 — Only a pool with a final outcome can be mirrored. An Open
+        // pool is still taking bets, and a Voided/Cancelled/Disputed pool has
+        // no outcome the target chain could safely settle against.
+        Self::settled_source_outcome(&pool)?;
         if env
             .storage()
             .persistent()
@@ -10339,6 +10348,13 @@ impl PredinexContract {
             return Err(ContractError::InvalidOutcome);
         }
 
+        // #1250 — The mirror may only be settled to the outcome the source pool
+        // actually settled to. Rejects a source that has not settled (or has
+        // since been disputed) and any outcome that disagrees with it.
+        if Self::settled_source_outcome(&source_pool)? != winning_outcome {
+            return Err(ContractError::SourceSettlementNotVerified);
+        }
+
         let timeout: u64 = env
             .storage()
             .persistent()
@@ -10366,6 +10382,19 @@ impl PredinexContract {
             },
         );
         Ok(())
+    }
+
+    /// #1250 — The winning outcome of a source pool that has settled, or
+    /// `SourceSettlementNotVerified` when the pool is in any other state.
+    fn settled_source_outcome(pool: &Pool) -> Result<u32, ContractError> {
+        match (&pool.status, pool.settled, pool.winning_outcome) {
+            (PoolStatus::Settled(status_outcome), true, Some(outcome))
+                if *status_outcome == outcome =>
+            {
+                Ok(outcome)
+            }
+            _ => Err(ContractError::SourceSettlementNotVerified),
+        }
     }
 
     pub fn get_pool_mirror(env: Env, source_pool_id: u32) -> Option<PoolMirrorConfig> {

@@ -8661,7 +8661,13 @@ impl PredinexContract {
         }
 
         let totals = Self::read_outcome_totals(&env, pool_id, &pool);
-        let pool_winning_total = totals.get(winning_outcome).unwrap();
+        // #1259 — guard against an out-of-range winning_outcome stored in the
+        // pool's settled status.  settle_mirror_from_source already rejects
+        // this, but preview_claimable_amount must not panic on it.
+        let pool_winning_total = match totals.get(winning_outcome) {
+            Some(t) => t,
+            None => return ClaimPreview::Unclaimable,
+        };
         if pool_winning_total == 0 {
             return ClaimPreview::Unclaimable;
         }

@@ -4,7 +4,7 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { PositionSimulationRequest, ApiResponse, PositionSimulationResponse } from '../types/index.js';
+import { PositionSimulationRequest, ApiResponse, PositionSimulationResponse, SimulationWarning } from '../types/index.js';
 import { SimulationEngine } from '../services/simulation-engine.js';
 import { SecuritySanitizer } from '../middleware/security.js';
 import { authMiddleware } from '../middleware/auth.js';

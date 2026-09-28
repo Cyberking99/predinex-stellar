@@ -1144,6 +1144,10 @@ pub enum DataKey {
     LastLargeBetTimestamp(Address, u32),
     PoolCategory(u32),
     PoolTags(u32),
+    /// #1257 — Resume cursor for `refund_expired_pool` batched sweep.
+    /// Stores the index of the next bettor to refund so the sweep can be
+    /// continued across multiple transactions for large pools.
+    PoolExpiredRefundCursor(u32),
 }
 
 // #189 — TTL bump policy for persistent storage entries.
@@ -6068,6 +6072,14 @@ impl PredinexContract {
         Ok(refund)
     }
 
+    /// #1257 — Maximum number of bettors refunded per `refund_expired_pool`
+    /// call.  Keeping this well below the Soroban per-transaction resource
+    /// budget ensures the sweep never exceeds the budget even on a popular pool.
+    /// Callers repeat the call (passing the same `pool_id`) until the function
+    /// returns `Ok(())` and the pool's `PoolExpiredRefundCursor` key is absent,
+    /// indicating all bettors have been processed.
+    const REFUND_EXPIRED_BATCH_SIZE: u32 = 25;
+
     pub fn refund_expired_pool(env: Env, pool_id: u32) -> Result<(), ContractError> {
         if !Self::is_initialized(&env) {
             panic_with_error!(&env, ContractError::NotInitialized);
@@ -6094,29 +6106,55 @@ impl PredinexContract {
             .get::<_, Pool>(&DataKey::Pool(pool_id))
             .ok_or(ContractError::PoolNotFound)?;
 
-        if pool.status != PoolStatus::Open {
-            return Err(ContractError::PoolNotOpen);
+        // #1257 — Allow re-entry when a previous batch left the pool in
+        // Cancelled state (sweep in progress).  Only reject truly terminal or
+        // wrong-state pools.
+        match pool.status {
+            PoolStatus::Open => {
+                // First call: validate expiry and transition to Cancelled.
+                if env.ledger().timestamp() < pool.expiry + GRACE_PERIOD_SECS {
+                    return Err(ContractError::PoolNotExpiredGracePeriod);
+                }
+                pool.status = PoolStatus::Cancelled;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Pool(pool_id), &pool);
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Pool(pool_id),
+                    POOL_BUMP_THRESHOLD,
+                    POOL_BUMP_TARGET,
+                );
+            }
+            PoolStatus::Cancelled => {
+                // Continuation call: cursor must still be present (i.e. sweep
+                // is in progress).  If no cursor exists the sweep already
+                // completed and there is nothing more to do.
+                let cursor_present = env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::PoolExpiredRefundCursor(pool_id));
+                if !cursor_present {
+                    return Err(ContractError::PoolIsCancelled);
+                }
+            }
+            _ => return Err(ContractError::PoolNotOpen),
         }
-
-        if env.ledger().timestamp() < pool.expiry + GRACE_PERIOD_SECS {
-            return Err(ContractError::PoolNotExpiredGracePeriod);
-        }
-
-        pool.status = PoolStatus::Cancelled;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Pool(pool_id), &pool);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Pool(pool_id),
-            POOL_BUMP_THRESHOLD,
-            POOL_BUMP_TARGET,
-        );
 
         let bettors = env
             .storage()
             .persistent()
             .get::<_, Vec<Address>>(&DataKey::PoolBettors(pool_id))
             .unwrap_or_else(|| Vec::new(&env));
+
+        // #1257 — Read resume cursor; default to 0 on the first call.
+        let start: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PoolExpiredRefundCursor(pool_id))
+            .unwrap_or(0);
+
+        let total_bettors = bettors.len();
+        let end = core::cmp::min(start + Self::REFUND_EXPIRED_BATCH_SIZE, total_bettors);
 
         let mut total_refunded: i128 = 0;
         let token_address = env
@@ -6126,7 +6164,8 @@ impl PredinexContract {
             .ok_or(ContractError::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_address);
 
-        for bettor in bettors.iter() {
+        for idx in start..end {
+            let bettor = bettors.get(idx).unwrap();
             if let Some(user_bet) = env
                 .storage()
                 .persistent()
@@ -6145,6 +6184,20 @@ impl PredinexContract {
                     .persistent()
                     .remove(&DataKey::UserOutcomeBets(pool_id, bettor.clone()));
             }
+        }
+
+        // #1257 — Advance or clear the cursor depending on whether more
+        // bettors remain.
+        if end < total_bettors {
+            env.storage()
+                .persistent()
+                .set(&DataKey::PoolExpiredRefundCursor(pool_id), &end);
+        } else {
+            // Sweep complete — remove cursor so callers know the pool is fully
+            // refunded.
+            env.storage()
+                .persistent()
+                .remove(&DataKey::PoolExpiredRefundCursor(pool_id));
         }
 
         emit_refund_expired_pool(&env, pool_id, PoolRefundedEvent { total_refunded });

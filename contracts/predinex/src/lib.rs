@@ -1171,6 +1171,16 @@ const PROTOCOL_FEE_MIN_BPS: u32 = 0;
 const PROTOCOL_FEE_MAX_BPS: u32 = 1000;
 const PROTOCOL_FEE_DEFAULT_BPS: u32 = 200;
 
+/// Maximum bet fee rate in basis points. Matches the protocol fee cap so that
+/// a privileged key cannot silently confiscate an outsized share of bets.
+const BET_FEE_MAX_BPS: u32 = 1000;
+
+/// Maximum number of bettors processed in a single `cancel_pool` /
+/// `refund_expired_pool` transaction. When there are more bettors than the
+/// batch size the function returns after persisting a cursor so the next call
+/// continues where it left off.
+const CANCEL_REFUND_BATCH_SIZE: u32 = 50;
+
 /// Maximum number of volume-based fee tiers accepted by `set_volume_fee_tiers`.
 const MAX_FEE_TIERS: u32 = 5;
 
@@ -2328,7 +2338,7 @@ impl PredinexContract {
     ) -> Result<(), ContractError> {
         caller.require_auth();
         Self::require_treasury_recipient(&env, &caller)?;
-        if fee_rate > 10_000 {
+        if fee_rate > BET_FEE_MAX_BPS {
             return Err(ContractError::FeeOutOfBounds);
         }
 
@@ -3713,6 +3723,22 @@ impl PredinexContract {
             .and_then(|weighted| previous.cumulative_odds_time.checked_add(weighted))
     }
 
+    /// Validate and collect the creator deposit. Called by every public
+    /// pool-creation entrypoint so the anti-spam floor is enforced uniformly.
+    fn collect_creator_deposit(env: &Env, creator: &Address, amount: i128) -> Result<(), ContractError> {
+        if amount < MIN_CREATOR_DEPOSIT {
+            return Err(ContractError::InsufficientCreatorDeposit);
+        }
+        let token_address: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Token)
+            .ok_or(ContractError::NotInitialized)?;
+        let token_client = token::Client::new(env, &token_address);
+        token_client.transfer(creator, &env.current_contract_address(), &amount);
+        Ok(())
+    }
+
     fn create_pool_internal(
         env: &Env,
         creator: Address,
@@ -4023,11 +4049,7 @@ impl PredinexContract {
             panic_with_error!(&env, ContractError::NotInitialized);
         }
         creator.require_auth();
-
-        // #570 — Minimum creator deposit.
-        if amount < MIN_CREATOR_DEPOSIT {
-            return Err(ContractError::InsufficientCreatorDeposit);
-        }
+        Self::collect_creator_deposit(&env, &creator, amount)?;
 
         let mut outcomes = Vec::new(&env);
         outcomes.push_back(outcome_a);
@@ -4056,12 +4078,14 @@ impl PredinexContract {
         outcome_a: String,
         outcome_b: String,
         duration: u64,
+        amount: i128,
         twap_period_secs: u64,
     ) -> Result<u32, ContractError> {
         if !Self::is_initialized(&env) {
             panic_with_error!(&env, ContractError::NotInitialized);
         }
         creator.require_auth();
+        Self::collect_creator_deposit(&env, &creator, amount)?;
 
         let mut outcomes = Vec::new(&env);
         outcomes.push_back(outcome_a);
@@ -4119,11 +4143,13 @@ impl PredinexContract {
         outcomes: Vec<String>,
         duration: u64,
         metadata_uri: Option<String>,
+        amount: i128,
     ) -> Result<u32, ContractError> {
         if !Self::is_initialized(&env) {
             panic_with_error!(&env, ContractError::NotInitialized);
         }
         creator.require_auth();
+        Self::collect_creator_deposit(&env, &creator, amount)?;
         Self::create_pool_internal(
             &env,
             creator,
@@ -4148,12 +4174,14 @@ impl PredinexContract {
         outcomes: Vec<String>,
         duration: u64,
         metadata_uri: Option<String>,
+        amount: i128,
         twap_period_secs: u64,
     ) -> Result<u32, ContractError> {
         if !Self::is_initialized(&env) {
             panic_with_error!(&env, ContractError::NotInitialized);
         }
         creator.require_auth();
+        Self::collect_creator_deposit(&env, &creator, amount)?;
         Self::create_pool_internal(
             &env,
             creator,
@@ -4203,6 +4231,7 @@ impl PredinexContract {
         outcome_a: String,
         outcome_b: String,
         duration: u64,
+        amount: i128,
         open_at: u64,
     ) -> Result<u32, ContractError> {
         creator.require_auth();
@@ -4216,6 +4245,8 @@ impl PredinexContract {
         if open_at > horizon {
             return Err(ContractError::DurationTooLong);
         }
+
+        Self::collect_creator_deposit(&env, &creator, amount)?;
 
         let mut outcomes = Vec::new(&env);
         outcomes.push_back(outcome_a);
@@ -4654,15 +4685,18 @@ impl PredinexContract {
                 total_bet: 0,
             });
 
-        let is_first_bet = user_bet.total_bet == 0;
-        if is_first_bet {
+        // Determine newness by checking whether the user already appears in
+        // PoolBettors, not by a zero running total. A cancel-then-re-bet cycle
+        // zeros `total_bet` but must not duplicate the address or inflate the
+        // participant count.
+        let mut bettors = env
+            .storage()
+            .persistent()
+            .get::<_, Vec<Address>>(&DataKey::PoolBettors(pool_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        let already_registered = bettors.iter().any(|b| b == user);
+        if !already_registered {
             pool.participant_count += 1;
-
-            let mut bettors = env
-                .storage()
-                .persistent()
-                .get::<_, Vec<Address>>(&DataKey::PoolBettors(pool_id))
-                .unwrap_or_else(|| Vec::new(&env));
             bettors.push_back(user.clone());
             env.storage()
                 .persistent()
@@ -5296,12 +5330,23 @@ impl PredinexContract {
             return Err(ContractError::Unauthorized);
         }
 
-        // Refund all participants (bettors).
+        // Refund participants in bounded batches so popular pools never exceed
+        // the per-transaction instruction budget. A cursor is persisted between
+        // calls; callers re-invoke `cancel_pool` until the pool reaches
+        // `Cancelled` status.
         let bettors = env
             .storage()
             .persistent()
             .get::<_, Vec<Address>>(&DataKey::PoolBettors(pool_id))
             .unwrap_or_else(|| Vec::new(&env));
+
+        let cursor_key = DataKey::CancelRefundCursor(pool_id);
+        let start: u32 = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&cursor_key)
+            .unwrap_or(0);
+        let end = core::cmp::min(start + CANCEL_REFUND_BATCH_SIZE, bettors.len());
 
         let mut total_refunded: i128 = 0;
         let mut participant_count: u32 = 0;
@@ -5313,7 +5358,8 @@ impl PredinexContract {
             .ok_or(ContractError::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_address);
 
-        for bettor in bettors.iter() {
+        for i in start..end {
+            let bettor = bettors.get(i).unwrap();
             if let Some(user_bet) = env
                 .storage()
                 .persistent()
@@ -5334,17 +5380,36 @@ impl PredinexContract {
             }
         }
 
-        pool.status = PoolStatus::Cancelled;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Pool(pool_id), &pool);
-
-        // #189 — cancelled pool must stay accessible for queries/records.
-        env.storage().persistent().extend_ttl(
-            &DataKey::Pool(pool_id),
-            POOL_BUMP_THRESHOLD,
-            POOL_BUMP_TARGET,
-        );
+        if end < bettors.len() {
+            // More bettors remain — persist cursor and keep pool in its current
+            // status so the next call continues refunding.
+            env.storage().persistent().set(&cursor_key, &end);
+            env.storage()
+                .persistent()
+                .extend_ttl(&cursor_key, POOL_BUMP_THRESHOLD, POOL_BUMP_TARGET);
+            // Persist pool (status unchanged) so it stays alive.
+            env.storage()
+                .persistent()
+                .set(&DataKey::Pool(pool_id), &pool);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Pool(pool_id),
+                POOL_BUMP_THRESHOLD,
+                POOL_BUMP_TARGET,
+            );
+        } else {
+            // All bettors processed — finalize cancellation.
+            env.storage().persistent().remove(&cursor_key);
+            pool.status = PoolStatus::Cancelled;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Pool(pool_id), &pool);
+            // #189 — cancelled pool must stay accessible for queries/records.
+            env.storage().persistent().extend_ttl(
+                &DataKey::Pool(pool_id),
+                POOL_BUMP_THRESHOLD,
+                POOL_BUMP_TARGET,
+            );
+        }
 
         emit_cancel_pool(
             &env,
@@ -8176,6 +8241,7 @@ impl PredinexContract {
         env: Env,
         creator: Address,
         template_id: u32,
+        amount: i128,
         overrides: PoolTemplateOverrides,
     ) -> Result<u32, ContractError> {
         creator.require_auth();
@@ -8190,6 +8256,7 @@ impl PredinexContract {
         let duration = overrides.duration.unwrap_or(template.duration);
         let metadata_uri = overrides.metadata_uri.or(template.metadata_uri);
         Self::validate_outcomes(&env, &outcomes)?;
+        Self::collect_creator_deposit(&env, &creator, amount)?;
         let pool_id = Self::create_pool_internal(
             &env,
             creator,
@@ -9099,6 +9166,7 @@ impl PredinexContract {
         duration: u64,
         allowed_tokens: Vec<Address>,
         metadata_uri: Option<String>,
+        amount: i128,
         deposit_deadline: Option<u64>,
     ) -> Result<u32, ContractError> {
         creator.require_auth();
@@ -9126,6 +9194,7 @@ impl PredinexContract {
             seen.push_back(tok);
         }
 
+        Self::collect_creator_deposit(&env, &creator, amount)?;
         let pool_id = Self::create_pool_internal(
             &env,
             creator,
@@ -9500,15 +9569,14 @@ impl PredinexContract {
                 total_bet: 0,
             });
 
-        let is_first_bet = user_bet.total_bet == 0;
-        if is_first_bet {
+        let mut bettors = env
+            .storage()
+            .persistent()
+            .get::<_, Vec<Address>>(&DataKey::PoolBettors(pool_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        let already_registered = bettors.iter().any(|b| b == user);
+        if !already_registered {
             pool.participant_count += 1;
-
-            let mut bettors = env
-                .storage()
-                .persistent()
-                .get::<_, Vec<Address>>(&DataKey::PoolBettors(pool_id))
-                .unwrap_or_else(|| Vec::new(&env));
             bettors.push_back(user.clone());
             env.storage()
                 .persistent()

@@ -64,6 +64,7 @@ fn setup() -> Ctx<'static> {
 
 /// Create a standard two-outcome pool with a 1-hour duration.
 fn make_pool(ctx: &Ctx, creator: &Address) -> u32 {
+    ctx.token_admin.mint(creator, &(MIN_CREATOR_DEPOSIT * 10));
     ctx.client.create_pool(
         creator,
         &String::from_str(&ctx.env, "Binary Market"),
@@ -264,6 +265,7 @@ fn mu3_dispute_blocks_claims_unfreeze_re_settles() {
     let user_b = Address::generate(&ctx.env);
     let user_c = Address::generate(&ctx.env);
 
+    mint(&ctx, &creator, MIN_CREATOR_DEPOSIT * 10);
     mint(&ctx, &user_a, 400);
     mint(&ctx, &user_b, 300);
     mint(&ctx, &user_c, 300);

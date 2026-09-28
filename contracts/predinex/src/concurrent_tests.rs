@@ -99,6 +99,7 @@ impl<'a> ConcurrentTestEnv<'a> {
 
     /// Create a standard pool with 1 hour expiry
     fn create_pool(&self, creator: &Address, title: &str) -> u32 {
+        self.mint_to(creator, MIN_CREATOR_DEPOSIT * 10);
         self.client.create_pool(
             creator,
             &SorobanString::from_str(&self.env, title),

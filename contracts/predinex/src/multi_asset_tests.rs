@@ -54,6 +54,7 @@ fn setup_ma() -> MaEnv<'static> {
 
 /// Helper: create a basic two-outcome multi-asset pool with base + alt tokens.
 fn make_ma_pool(t: &MaEnv, creator: &Address) -> u32 {
+    t.base_admin.mint(creator, &(MIN_CREATOR_DEPOSIT * 10));
     let mut allowed = Vec::new(&t.env);
     allowed.push_back(t.base_token.clone());
     allowed.push_back(t.alt_token.clone());
@@ -71,6 +72,7 @@ fn make_ma_pool(t: &MaEnv, creator: &Address) -> u32 {
         &3_600u64,
         &allowed,
         &None,
+        &MIN_CREATOR_DEPOSIT,
         &None::<u64>,
     )
 }
@@ -220,6 +222,7 @@ fn ma_4_place_bet_without_exchange_rate_fails() {
         &3_600u64,
         &allowed,
         &None::<String>,
+        &MIN_CREATOR_DEPOSIT,
         &None::<u64>,
     );
     assert_eq!(create_result, Err(Ok(ContractError::ExchangeRateNotSet)));
@@ -590,6 +593,9 @@ fn parity_single_vs_multi_asset_same_normalized_payout() {
     t.client
         .set_token_exchange_rate(&t.treasury, &t.alt_token, &10_000i128);
 
+    // Fund the creator for two pool deposits.
+    t.base_admin.mint(&creator, &(MIN_CREATOR_DEPOSIT * 10));
+
     // Single-asset pool.
     let single_id = t.client.create_pool(
         &creator,
@@ -618,6 +624,7 @@ fn parity_single_vs_multi_asset_same_normalized_payout() {
         &3_600u64,
         &allowed,
         &None::<String>,
+        &MIN_CREATOR_DEPOSIT,
         &None::<u64>,
     );
 
@@ -696,6 +703,9 @@ fn parity_single_vs_multi_mixed_token_normalized_parity() {
     t.client
         .set_token_exchange_rate(&t.treasury, &t.alt_token, &5_000i128);
 
+    // Fund the creator for two pool deposits.
+    t.base_admin.mint(&creator, &(MIN_CREATOR_DEPOSIT * 10));
+
     // Single-asset pool: 100 on 0, 100 on 1 => total 200, net 196, winner gets 196.
     let single_id = t.client.create_pool(
         &creator,
@@ -725,6 +735,7 @@ fn parity_single_vs_multi_mixed_token_normalized_parity() {
         &3_600u64,
         &allowed,
         &None::<String>,
+        &MIN_CREATOR_DEPOSIT,
         &None::<u64>,
     );
 

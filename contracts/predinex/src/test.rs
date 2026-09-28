@@ -4348,9 +4348,10 @@ fn test_settle_pools_batch_single_pool() {
     });
 
     let results = t.client.settle_pools(&t.admin, &reqs);
-    assert_eq!(results.len(), 1);
-    assert!(results.get(0).unwrap().success);
-    assert_eq!(results.get(0).unwrap().pool_id, pool_id);
+    assert_eq!(results.results.len(), 1);
+    assert!(!results.truncated);
+    assert!(results.results.get(0).unwrap().success);
+    assert_eq!(results.results.get(0).unwrap().pool_id, pool_id);
 
     let pool = t.client.get_pool(&pool_id).unwrap();
     assert_eq!(pool.status, PoolStatus::Settled(0));
@@ -4387,11 +4388,16 @@ fn test_settle_pools_batch_partial_failure() {
     });
 
     let results = t.client.settle_pools(&t.admin, &reqs);
-    assert_eq!(results.len(), 2);
-    assert!(results.get(0).unwrap().success, "pool_a must settle");
+    assert_eq!(results.results.len(), 2);
+    assert!(!results.truncated);
+    assert!(results.results.get(0).unwrap().success, "pool_a must settle");
     assert!(
-        !results.get(1).unwrap().success,
+        !results.results.get(1).unwrap().success,
         "future pool must fail (not expired)"
+    );
+    assert!(
+        results.results.get(1).unwrap().error_code != 0,
+        "failed pool must carry error code"
     );
 }
 
@@ -4407,7 +4413,8 @@ fn test_settle_pools_caps_at_twenty() {
     }
 
     let results = t.client.settle_pools(&t.admin, &reqs);
-    assert_eq!(results.len(), 20, "must cap at 20 pools");
+    assert_eq!(results.results.len(), 25, "must return all requested pools");
+    assert!(results.truncated, "must signal truncation when > 20");
 }
 
 #[test]
@@ -4425,10 +4432,14 @@ fn test_settle_pools_unauthorized_rejected() {
     let stranger = Address::generate(&t.env);
 
     let results = t.client.settle_pools(&stranger, &reqs);
-    assert_eq!(results.len(), 1, "must return exactly 1 result");
+    assert_eq!(results.results.len(), 1, "must return exactly 1 result");
     assert!(
-        !results.get(0).unwrap().success,
+        !results.results.get(0).unwrap().success,
         "unauthorized caller must fail to settle"
+    );
+    assert!(
+        results.results.get(0).unwrap().error_code != 0,
+        "unauthorized must carry error code"
     );
 }
 

@@ -2019,6 +2019,7 @@ pub struct SettleExpiredEvent {
 pub struct SettleResult {
     pub pool_id: u32,
     pub success: bool,
+    pub error_code: u32,
 }
 
 /// #351 — Settlement request for a single pool in a batch call.
@@ -2027,6 +2028,14 @@ pub struct SettleResult {
 pub struct PoolSettleRequest {
     pub pool_id: u32,
     pub winning_outcome: u32,
+}
+
+/// #1247 — Batch result wrapper for settle_pools, signalling truncation.
+#[derive(Clone)]
+#[contracttype]
+pub struct SettleBatchResult {
+    pub results: Vec<SettleResult>,
+    pub truncated: bool,
 }
 
 /// #356 — Event payload emitted alongside `place_bet` when a referrer is present.
@@ -2053,6 +2062,15 @@ pub struct ReferralRewardClaimedEvent {
 pub struct ClaimAllEntry {
     pub pool_id: u32,
     pub amount: i128,
+    pub error_code: u32,
+}
+
+/// #1248 — Batch result wrapper for claim_all_winnings, signalling truncation.
+#[derive(Clone)]
+#[contracttype]
+pub struct ClaimBatchResult {
+    pub results: Vec<ClaimAllEntry>,
+    pub truncated: bool,
 }
 
 /// Per-token payout entry within a multi-asset claim. `amount` is in the raw
@@ -2230,6 +2248,8 @@ pub struct BridgeTransferEvent {
 pub struct LpPosition {
     pub shares: i128,
     pub reward_debt: i128,
+    /// #1246 — Unpaid reward shortfall carried forward from underfunded withdrawals.
+    pub unpaid_reward_debt: i128,
 }
 
 /// #714 — Time-locked LP stake for bonus rewards.
@@ -2238,6 +2258,8 @@ pub struct LpPosition {
 pub struct LpStakeInfo {
     pub shares: i128,
     pub lock_until: u64,
+    /// #1245 — Timestamp when the stake was created, for boost accrual.
+    pub staked_at: u64,
 }
 
 /// #714 — LP reward configuration returned by view functions.
@@ -5809,19 +5831,33 @@ impl PredinexContract {
         env: Env,
         caller: Address,
         pools: Vec<PoolSettleRequest>,
-    ) -> Vec<SettleResult> {
+    ) -> SettleBatchResult {
         caller.require_auth();
-        let mut results = Vec::new(&env);
-        let cap = if pools.len() > 20 { 20 } else { pools.len() };
-        for req in pools.iter().take(cap as usize) {
-            let success =
-                Self::settle_single_pool(&env, &caller, req.pool_id, req.winning_outcome).is_ok();
-            results.push_back(SettleResult {
-                pool_id: req.pool_id,
-                success,
-            });
+        if !Self::is_initialized(&env) {
+            panic_with_error!(&env, ContractError::NotInitialized);
         }
-        results
+        let mut results = Vec::new(&env);
+        let total = pools.len();
+        let truncated = total > 20;
+        let cap = if total > 20 { 20 } else { total };
+        for req in pools.iter().take(cap as usize) {
+            match Self::settle_single_pool(&env, &caller, req.pool_id, req.winning_outcome) {
+                Ok(()) => results.push_back(SettleResult {
+                    pool_id: req.pool_id,
+                    success: true,
+                    error_code: 0,
+                }),
+                Err(e) => results.push_back(SettleResult {
+                    pool_id: req.pool_id,
+                    success: false,
+                    error_code: e as u32,
+                }),
+            }
+        }
+        SettleBatchResult {
+            results,
+            truncated,
+        }
     }
 
     /// #176 — Return the settlement source for a pool, or `None` if not yet settled.
@@ -6772,6 +6808,7 @@ impl PredinexContract {
                                 results.push_back(ClaimAllEntry {
                                     pool_id: entry.pool_id,
                                     amount,
+                                    error_code: 0,
                                 });
                             }
                             Err(_) => {
@@ -6847,14 +6884,16 @@ impl PredinexContract {
         env: Env,
         user: Address,
         pool_ids: Vec<u32>,
-    ) -> Result<Vec<ClaimAllEntry>, ContractError> {
+    ) -> ClaimBatchResult {
         user.require_auth();
 
         let mut results = Vec::new(&env);
-        let cap = if pool_ids.len() > 20 {
+        let total = pool_ids.len();
+        let truncated = total > 20;
+        let cap = if total > 20 {
             20
         } else {
-            pool_ids.len()
+            total
         };
 
         for i in 0..cap {
@@ -6867,21 +6906,36 @@ impl PredinexContract {
                 .get::<_, bool>(&DataKey::PoolIsMultiAsset(pool_id))
                 .unwrap_or(false)
             {
+                results.push_back(ClaimAllEntry {
+                    pool_id,
+                    amount: 0,
+                    error_code: ContractError::MultiAssetClaimRequired as u32,
+                });
                 continue;
             }
 
-            // Skip pools with no settled status, no user bet, or no winning stake.
-            // claim_winnings_internal returns a typed error for each — we skip on
-            // any error so a single ineligible pool never aborts the whole batch.
             match Self::claim_winnings_internal(&env, user.clone(), pool_id) {
                 Ok(amount) => {
-                    results.push_back(ClaimAllEntry { pool_id, amount });
+                    results.push_back(ClaimAllEntry {
+                        pool_id,
+                        amount,
+                        error_code: 0,
+                    });
                 }
-                Err(_) => continue,
+                Err(e) => {
+                    results.push_back(ClaimAllEntry {
+                        pool_id,
+                        amount: 0,
+                        error_code: e as u32,
+                    });
+                }
             }
         }
 
-        Ok(results)
+        ClaimBatchResult {
+            results,
+            truncated,
+        }
     }
 
     /// #158 — Return the per-pool payout-tracking state, or `None` if the
@@ -8618,6 +8672,7 @@ impl PredinexContract {
                 .unwrap_or(LpPosition {
                     shares: 0,
                     reward_debt: 0,
+                    unpaid_reward_debt: 0,
                 });
 
             // Skip pools where the user has neither a bet nor an LP stake.
@@ -8640,7 +8695,7 @@ impl PredinexContract {
                     .get(&DataKey::LpFeePerShare(pool_id))
                     .unwrap_or(0);
                 match Self::pending_lp_rewards(&env, pool_id, &user, &lp_position, fee_per_share) {
-                    Ok((raw, _)) => {
+                    Ok((raw, _, _)) => {
                         if raw < 0 {
                             (0, false)
                         } else {
@@ -10533,51 +10588,64 @@ impl PredinexContract {
         user: &Address,
         position: &LpPosition,
         fee_per_share: i128,
-    ) -> Result<(i128, i128), ContractError> {
+    ) -> Result<(i128, i128, i128), ContractError> {
         if position.shares <= 0 {
-            return Ok((0, 0));
+            return Ok((0, 0, 0));
         }
 
-        let base_pending = position
+        let current_base = position
             .shares
             .checked_mul(fee_per_share)
             .ok_or(ContractError::PoolTotalOverflow)?
             / LP_PRECISION
             - position.reward_debt;
-        if base_pending <= 0 {
-            return Ok((0, 0));
+        if current_base <= 0 && position.unpaid_reward_debt <= 0 {
+            return Ok((0, 0, 0));
         }
 
+        let unpaid = position.unpaid_reward_debt;
+        let base_pending = current_base + unpaid;
+
         let mut pending = base_pending;
+        let now = env.ledger().timestamp();
         if let Some(stake) = env
             .storage()
             .persistent()
             .get::<_, LpStakeInfo>(&DataKey::LpStake(pool_id, user.clone()))
         {
-            if env.ledger().timestamp() < stake.lock_until {
-                let boost_bps: u32 = env
-                    .storage()
-                    .persistent()
-                    .get(&DataKey::LpStakeBoostBps)
-                    .unwrap_or(10_000);
-                let staked_fraction = stake
-                    .shares
-                    .checked_mul(10_000)
-                    .ok_or(ContractError::PoolTotalOverflow)?
-                    / position.shares;
-                let boost_portion = base_pending
-                    .checked_mul(staked_fraction)
-                    .ok_or(ContractError::PoolTotalOverflow)?
-                    / 10_000;
-                let boosted = boost_portion
-                    .checked_mul(boost_bps as i128)
-                    .ok_or(ContractError::PoolTotalOverflow)?
-                    / 10_000;
-                pending = base_pending - boost_portion + boosted;
+            if now < stake.lock_until {
+                let elapsed = now.saturating_sub(stake.staked_at);
+                let lock_duration = stake.lock_until.saturating_sub(stake.staked_at);
+                if lock_duration > 0 && elapsed >= MIN_POOL_DURATION_SECS {
+                    let boost_bps: u32 = env
+                        .storage()
+                        .persistent()
+                        .get(&DataKey::LpStakeBoostBps)
+                        .unwrap_or(10_000);
+                    let staked_fraction = stake
+                        .shares
+                        .checked_mul(10_000)
+                        .ok_or(ContractError::PoolTotalOverflow)?
+                        / position.shares;
+                    let boost_portion = base_pending
+                        .checked_mul(staked_fraction)
+                        .ok_or(ContractError::PoolTotalOverflow)?
+                        / 10_000;
+                    // #1245 — scale boost linearly by elapsed time over lock duration
+                    // so stakers cannot immediately claim full boosted rewards.
+                    let elapsed_bps = (elapsed * 10_000 / lock_duration).min(10_000);
+                    let effective_bps =
+                        (boost_bps as i128 * elapsed_bps as i128 / 10_000) as i128;
+                    let boosted = boost_portion
+                        .checked_mul(effective_bps)
+                        .ok_or(ContractError::PoolTotalOverflow)?
+                        / 10_000;
+                    pending = base_pending - boost_portion + boosted;
+                }
             }
         }
 
-        Ok((pending.max(0), base_pending))
+        Ok((pending.max(0), base_pending, unpaid))
     }
 
     fn lp_reward_debt_increment(
@@ -10660,6 +10728,7 @@ impl PredinexContract {
             .unwrap_or(LpPosition {
                 shares: 0,
                 reward_debt: 0,
+                unpaid_reward_debt: 0,
             });
         position.shares = position
             .shares
@@ -10783,7 +10852,8 @@ impl PredinexContract {
             .checked_mul(fee_per_share)
             .ok_or(ContractError::PoolTotalOverflow)?
             / LP_PRECISION
-            - position.reward_debt;
+            - position.reward_debt
+            + position.unpaid_reward_debt;
         if pending > 0 {
             let reward_pool: i128 = env
                 .storage()
@@ -10811,6 +10881,10 @@ impl PredinexContract {
                     &(reward_pool - actual_reward),
                 );
             }
+            // #1246 — carry forward any unpaid shortfall so it is not silently lost.
+            position.unpaid_reward_debt = (pending - actual_reward).max(0);
+        } else {
+            position.unpaid_reward_debt = 0;
         }
 
         position.shares -= shares;
@@ -10879,7 +10953,7 @@ impl PredinexContract {
             .persistent()
             .get(&DataKey::LpFeePerShare(pool_id))
             .unwrap_or(0);
-        let (pending, base_pending) =
+        let (pending, base_pending, prev_unpaid) =
             Self::pending_lp_rewards(&env, pool_id, &user, &position, fee_per_share)?;
 
         if pending <= 0 {
@@ -10913,6 +10987,8 @@ impl PredinexContract {
             &DataKey::LpRewardPool(pool_id),
             &(reward_pool - actual_reward),
         );
+        // #1246 — carry forward unpaid shortfall so it is not silently lost.
+        position.unpaid_reward_debt = (pending - actual_reward).max(0);
         // Convert the actual payout back into base fee-per-share debt space.
         // When boosted rewards are capped by pool balance, advancing debt by
         // the raw payout would erase too much of the user's residual claim.
@@ -10990,6 +11066,7 @@ impl PredinexContract {
         let stake = LpStakeInfo {
             shares: new_staked,
             lock_until,
+            staked_at: existing_stake.as_ref().map(|s| s.staked_at).unwrap_or_else(|| env.ledger().timestamp()),
         };
         env.storage()
             .persistent()
@@ -11028,6 +11105,7 @@ impl PredinexContract {
             .unwrap_or(LpPosition {
                 shares: 0,
                 reward_debt: 0,
+                unpaid_reward_debt: 0,
             })
     }
 
@@ -11040,6 +11118,7 @@ impl PredinexContract {
             .unwrap_or(LpPosition {
                 shares: 0,
                 reward_debt: 0,
+                unpaid_reward_debt: 0,
             });
         if position.shares == 0 {
             return 0;
@@ -11050,7 +11129,7 @@ impl PredinexContract {
             .get(&DataKey::LpFeePerShare(pool_id))
             .unwrap_or(0);
         let pending = Self::pending_lp_rewards(&env, pool_id, &user, &position, fee_per_share)
-            .unwrap_or((0, 0))
+            .unwrap_or((0, 0, 0))
             .0;
         if pending < 0 {
             0

@@ -32,11 +32,17 @@ export type SorobanConfig = {
   bridgeContractId?: string;
 };
 
+/**
+ * Client-visible webhook settings.
+ *
+ * #1286 — the `secret` field was removed. Webhook signing is a server concern:
+ * the secret now lives only in the server-only `WEBHOOK_SECRET` env var and is
+ * read inside `app/api/webhooks/notify`. A `NEXT_PUBLIC_` secret is compiled
+ * into the client bundle, so it cannot be used for signing.
+ */
 export type WebhookSettings = {
   /** Global webhook URL for all pools */
   url: string;
-  /** Shared secret for HMAC signature verification */
-  secret: string;
   /** Whether global webhook is enabled */
   enabled: boolean;
 };
@@ -44,8 +50,6 @@ export type WebhookSettings = {
 export type PoolWebhookSettings = {
   /** Per-pool webhook URL */
   url: string;
-  /** Per-pool secret for HMAC signature */
-  secret: string;
   /** Whether per-pool webhook is enabled */
   enabled: boolean;
 };
@@ -184,17 +188,16 @@ export function getRuntimeConfig(): RuntimeConfig {
 
 function parseWebhookConfig(): WebhookSettings | undefined {
   const url = typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_WEBHOOK_URL;
-  const secret = typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_WEBHOOK_SECRET;
   const enabled = typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_WEBHOOK_ENABLED === 'true';
-  
-  if (!url || !secret) {
+
+  if (!url) {
     // Return undefined if not configured (webhook disabled by default)
     return undefined;
   }
-  
+
+  // No secret here by design (#1286) — see WebhookSettings.
   return {
     url,
-    secret,
     enabled,
   };
 }

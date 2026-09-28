@@ -50,6 +50,7 @@ fn mint(env: &Env, token: &Address, user: &Address, amount: i128) {
 /// Create a standard 1-hour pool and return its ID.
 fn make_pool_mu(t: &MultiUserEnv) -> u32 {
     let creator = Address::generate(&t.env);
+    mint(&t.env, &t.token, &creator, MIN_CREATOR_DEPOSIT * 10);
     t.client.create_pool(
         &creator,
         &String::from_str(&t.env, "Accumulation Pool"),
@@ -637,8 +638,8 @@ fn l1_fifty_users_same_pool_multiple_winner_claims() {
     );
     assert_eq!(
         token_client.balance(&contract_addr),
-        total_pool,
-        "contract escrow must hold every staked token"
+        total_pool + MIN_CREATOR_DEPOSIT,
+        "contract escrow must hold every staked token plus the creator deposit"
     );
 
     let fee = (total_pool * 200) / 10_000; // 80
@@ -780,8 +781,8 @@ fn l2_settle_and_claim_rapid_succession() {
             // escrow must equal exactly the treasury balance — nothing stranded.
             assert_eq!(
                 token_client.balance(&contract_addr),
-                treasury,
-                "escrow must equal the treasury balance once all winners claim"
+                treasury + MIN_CREATOR_DEPOSIT,
+                "escrow must equal the treasury balance plus the creator deposit once all winners claim"
             );
         }
     }

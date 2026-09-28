@@ -52,6 +52,7 @@ impl Ctx {
     }
 
     fn create_pool(&self, creator: &Address) -> u32 {
+        self.mint(creator, MIN_CREATOR_DEPOSIT * 10);
         self.client.create_pool(
             creator,
             &String::from_str(&self.env, "Test Pool"),

@@ -43,6 +43,10 @@ impl TestCtx {
 
         let pool_creator = Address::generate(&env);
 
+        // Fund the pool creator so creator-deposit transfers succeed.
+        let sac = token::StellarAssetClient::new(&env, &token_id.address());
+        sac.mint(&pool_creator, &(MIN_CREATOR_DEPOSIT * 100));
+
         TestCtx {
             env,
             client,

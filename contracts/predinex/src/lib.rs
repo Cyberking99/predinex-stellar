@@ -939,6 +939,8 @@ pub enum DataKey {
     PoolCounter,
     Token,
     Treasury,
+    /// Per-token treasury balance ledger.
+    TreasuryToken(Address),
     TreasuryRecipient,
     FeeRate,
     FeeRecipient,
@@ -1017,6 +1019,8 @@ pub enum DataKey {
     TreasuryWithdrawalState,
     /// List of all bettor addresses in a pool.
     PoolBettors(u32),
+    /// Cancellation refund cursor for batched refunds in cancel_pool.
+    CancelRefundCursor(u32),
     /// Contract-wide cumulative betting volume across all pools, incremented by
     /// the bet amount on every `place_bet`. Read via `get_total_contract_volume`.
     TotalContractVolume,
@@ -1064,6 +1068,8 @@ pub enum DataKey {
     /// `claim_multi_asset_winnings` call. Treasury collects it via
     /// `collect_multi_asset_fees`.
     PoolTokenFeePending(u32, Address),
+    /// Snapshotted exchange rate for pending fee per (pool, token) at fee accrual time.
+    PoolTokenFeePendingRate(u32, Address),
     /// #420 — Referral reward basis points (shared from protocol fee).
     ReferralBps,
     /// #420 — Accumulated referral rewards balance per referrer address.
@@ -2315,6 +2321,7 @@ impl PredinexContract {
             .set(&DataKey::FeeRecipient, &treasury_recipient);
         env.storage().persistent().set(&DataKey::FeeRate, &0u32);
         env.storage().persistent().set(&DataKey::Treasury, &0i128);
+        env.storage().persistent().set(&DataKey::TreasuryToken(token.clone()), &0i128);
         env.storage().persistent().set(&DataKey::Admin, &admin);
         emit_admin_set(&env, None, admin);
         // #191 — persist the contract state schema version on initialization.
@@ -6453,6 +6460,17 @@ impl PredinexContract {
                 .persistent()
                 .set(&DataKey::Treasury, &next_treasury);
 
+            let main_token_opt: Option<Address> = env.storage().persistent().get(&DataKey::Token);
+            if let Some(mt) = main_token_opt {
+                let prev_tok: i128 = env.storage().persistent().get(&DataKey::TreasuryToken(mt.clone())).unwrap_or(0);
+                let next_tok = prev_tok
+                    .checked_add(treasury_delta)
+                    .ok_or(ContractError::TreasuryOverflow)?;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::TreasuryToken(mt), &next_tok);
+            }
+
             // #195 — per-pool attribution must move in lockstep with aggregate Treasury.
             let credit_key = DataKey::PoolTreasuryCredited(pool_id);
             let prev_pool_credit: i128 = env.storage().persistent().get(&credit_key).unwrap_or(0);
@@ -6938,7 +6956,12 @@ impl PredinexContract {
                     let exchange_rate: i128 = env
                         .storage()
                         .persistent()
-                        .get(&DataKey::TokenExchangeRate(tok))
+                        .get(&DataKey::PoolTokenFeePendingRate(pool_id, tok.clone()))
+                        .or_else(|| {
+                            env.storage()
+                                .persistent()
+                                .get(&DataKey::TokenExchangeRate(tok))
+                        })
                         .unwrap_or(10_000);
                     let normalized_fee = fee_t * exchange_rate / 10_000;
                     pending_normalized += normalized_fee;
@@ -7037,10 +7060,25 @@ impl PredinexContract {
     /// A withdrawal of any amount `a` where `0 < a <= get_withdrawable_treasury()`
     /// is guaranteed to pass the balance check in `withdraw_treasury`.
     pub fn get_withdrawable_treasury(env: Env) -> i128 {
-        env.storage()
-            .persistent()
-            .get::<_, i128>(&DataKey::Treasury)
-            .unwrap_or(0)
+        let main_token: Option<Address> = env.storage().persistent().get(&DataKey::Token);
+        if let Some(ref mt) = main_token {
+            let main_bal: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TreasuryToken(mt.clone()))
+                .unwrap_or(0);
+            let total_treasury: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Treasury)
+                .unwrap_or(0);
+            core::cmp::min(main_bal, total_treasury)
+        } else {
+            env.storage()
+                .persistent()
+                .get::<_, i128>(&DataKey::Treasury)
+                .unwrap_or(0)
+        }
     }
 
     /// Return the current treasury recipient / admin address, or `None` if the
@@ -7174,13 +7212,25 @@ impl PredinexContract {
             return Err(ContractError::InvalidWithdrawalAmount);
         }
 
+        let token_address = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Token)
+            .ok_or(ContractError::NotInitialized)?;
+
         let current_treasury: i128 = env
             .storage()
             .persistent()
             .get(&DataKey::Treasury)
             .unwrap_or(0);
 
-        if amount > current_treasury {
+        let current_main_treasury: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreasuryToken(token_address.clone()))
+            .unwrap_or(0);
+
+        if amount > current_treasury || amount > current_main_treasury {
             return Err(ContractError::InsufficientTreasuryBalance);
         }
 
@@ -7193,15 +7243,16 @@ impl PredinexContract {
             .get(&DataKey::Treasury)
             .unwrap_or(0);
 
-        if amount > current_treasury {
+        let current_main_treasury: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreasuryToken(token_address.clone()))
+            .unwrap_or(0);
+
+        if amount > current_treasury || amount > current_main_treasury {
             return Err(ContractError::InsufficientTreasuryBalance);
         }
 
-        let token_address = env
-            .storage()
-            .persistent()
-            .get::<_, Address>(&DataKey::Token)
-            .ok_or(ContractError::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_address);
 
         token_client.transfer(
@@ -7213,6 +7264,9 @@ impl PredinexContract {
         env.storage()
             .persistent()
             .set(&DataKey::Treasury, &(current_treasury - amount));
+        env.storage()
+            .persistent()
+            .set(&DataKey::TreasuryToken(token_address), &(current_main_treasury - amount));
 
         emit_treasury_withdrawn(&env, caller.clone(), treasury_recipient, amount);
         Ok(())
@@ -8880,7 +8934,10 @@ impl PredinexContract {
 
         // Credit referral reward if bps > 0.
         if bps > 0 {
-            let reward = amount`n                .checked_mul(bps as i128)`n                .ok_or(ContractError::TreasuryOverflow)?`n                / 10_000;
+            let reward = amount
+                .checked_mul(bps as i128)
+                .ok_or(ContractError::TreasuryOverflow)?
+                / 10_000;
             if reward > 0 {
                 let key = DataKey::ReferralBalance(referrer.clone());
                 let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
@@ -9831,9 +9888,17 @@ impl PredinexContract {
                     .unwrap_or(0);
                 let fee_t = Self::calc_protocol_fee(deposit, fee_bps).unwrap_or(0);
                 if fee_t > 0 {
+                    let rate: i128 = env
+                        .storage()
+                        .persistent()
+                        .get(&DataKey::TokenExchangeRate(tok.clone()))
+                        .unwrap_or(10_000);
                     env.storage()
                         .persistent()
-                        .set(&DataKey::PoolTokenFeePending(pool_id, tok), &fee_t);
+                        .set(&DataKey::PoolTokenFeePending(pool_id, tok.clone()), &fee_t);
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::PoolTokenFeePendingRate(pool_id, tok), &rate);
                 }
             }
             payout_state.fee_credited = true;
@@ -10094,34 +10159,102 @@ impl PredinexContract {
             return Err(ContractError::InvalidWithdrawalAmount);
         }
 
-        // #1028 — prevent rescue from sweeping LP reward obligations.
-        // When rescuing the contract's main staking token, compute the sum of
-        // all pending LP reward pools and ensure the rescue amount leaves enough
-        // to cover those obligations.
+        // Prevent rescue from sweeping LP obligations, treasury reserves, or bettor escrow.
         let main_token: Option<Address> = env.storage().persistent().get(&DataKey::Token);
-        if let Some(ref mt) = main_token {
-            if *mt == token {
-                let pool_count = Self::get_pool_count(env.clone());
-                let mut total_lp_obligations: i128 = 0;
-                for pid in 1..=pool_count {
-                    let obligation: i128 = env
-                        .storage()
-                        .persistent()
-                        .get(&DataKey::LpRewardPool(pid))
-                        .unwrap_or(0);
-                    total_lp_obligations = total_lp_obligations
-                        .checked_add(obligation)
-                        .ok_or(ContractError::PoolTotalOverflow)?;
-                }
-                let contract_balance =
-                    token::Client::new(&env, &token).balance(&env.current_contract_address());
-                let available = contract_balance
-                    .checked_sub(total_lp_obligations)
-                    .ok_or(ContractError::InsufficientTreasuryBalance)?;
-                if amount > available {
-                    return Err(ContractError::InsufficientTreasuryBalance);
+        let is_main_token = match main_token {
+            Some(ref mt) => *mt == token,
+            None => false,
+        };
+
+        let pool_count = Self::get_pool_count(env.clone());
+        let mut total_liabilities: i128 = 0;
+
+        if is_main_token {
+            let current_treasury: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Treasury)
+                .unwrap_or(0);
+            total_liabilities = total_liabilities
+                .checked_add(current_treasury)
+                .ok_or(ContractError::PoolTotalOverflow)?;
+        }
+
+        for pid in 1..=pool_count {
+            if is_main_token {
+                let lp_reward: i128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::LpRewardPool(pid))
+                    .unwrap_or(0);
+                let lp_liquidity: i128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::LpTotalLiquidity(pid))
+                    .unwrap_or(0);
+                total_liabilities = total_liabilities
+                    .checked_add(lp_reward)
+                    .ok_or(ContractError::PoolTotalOverflow)?
+                    .checked_add(lp_liquidity)
+                    .ok_or(ContractError::PoolTotalOverflow)?;
+            }
+
+            let is_multi_asset = env
+                .storage()
+                .persistent()
+                .get::<_, bool>(&DataKey::PoolIsMultiAsset(pid))
+                .unwrap_or(false);
+
+            if is_multi_asset {
+                let deposit: i128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::PoolTokenDeposit(pid, token.clone()))
+                    .unwrap_or(0);
+                let paid_out: i128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::PoolTokenPaidOut(pid, token.clone()))
+                    .unwrap_or(0);
+                let pool_liability = deposit.saturating_sub(paid_out);
+                total_liabilities = total_liabilities
+                    .checked_add(pool_liability)
+                    .ok_or(ContractError::PoolTotalOverflow)?;
+            } else if is_main_token {
+                if let Some(pool) = env.storage().persistent().get::<_, Pool>(&DataKey::Pool(pid)) {
+                    if pool.status != PoolStatus::Cancelled {
+                        let total_bets = pool
+                            .total_a
+                            .checked_add(pool.total_b)
+                            .ok_or(ContractError::PoolTotalOverflow)?;
+                        let payout_state: PoolPayoutState = env
+                            .storage()
+                            .persistent()
+                            .get(&DataKey::PoolPayoutState(pid))
+                            .unwrap_or_default();
+                        let remaining_escrow = total_bets.saturating_sub(payout_state.paid_out);
+                        let fee_already_in_treasury = if payout_state.fee_credited {
+                            let fee_bps = Self::pool_effective_fee_bps(&env, pid);
+                            Self::calc_protocol_fee(total_bets, fee_bps).unwrap_or(0)
+                        } else {
+                            0
+                        };
+                        let bettor_liability = remaining_escrow.saturating_sub(fee_already_in_treasury);
+                        total_liabilities = total_liabilities
+                            .checked_add(bettor_liability)
+                            .ok_or(ContractError::PoolTotalOverflow)?;
+                    }
                 }
             }
+        }
+
+        let contract_balance =
+            token::Client::new(&env, &token).balance(&env.current_contract_address());
+        let available = contract_balance
+            .checked_sub(total_liabilities)
+            .ok_or(ContractError::InsufficientTreasuryBalance)?;
+        if amount > available {
+            return Err(ContractError::InsufficientTreasuryBalance);
         }
 
         token::Client::new(&env, &token).transfer(&env.current_contract_address(), &to, &amount);
@@ -10183,11 +10316,18 @@ impl PredinexContract {
                     &fee_t,
                 );
 
-                // Convert fee to normalized (base-equivalent) amount for Treasury tracking.
+                // Convert fee to normalized (base-equivalent) amount for Treasury tracking,
+                // using the snapshotted rate from fee accrual time.
+                let rate_key = DataKey::PoolTokenFeePendingRate(pool_id, tok.clone());
                 let exchange_rate: i128 = env
                     .storage()
                     .persistent()
-                    .get(&DataKey::TokenExchangeRate(tok.clone()))
+                    .get(&rate_key)
+                    .or_else(|| {
+                        env.storage()
+                            .persistent()
+                            .get(&DataKey::TokenExchangeRate(tok.clone()))
+                    })
                     .unwrap_or(10_000);
                 let normalized_fee = fee_t
                     .checked_mul(exchange_rate)
@@ -10198,8 +10338,9 @@ impl PredinexContract {
                     .checked_add(normalized_fee)
                     .ok_or(ContractError::TreasuryOverflow)?;
 
-                // Remove the pending fee record.
+                // Remove the pending fee record and snapshotted rate.
                 env.storage().persistent().remove(&fee_key);
+                env.storage().persistent().remove(&rate_key);
             }
         }
 

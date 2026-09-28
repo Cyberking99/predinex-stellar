@@ -109,10 +109,13 @@ export class SimulationEngine {
     let liquidationPriceUsd: number | undefined = undefined;
     if (simulatedCollaterals.length === 1 && simulatedBorrows.length >= 1) {
       const col = simulatedCollaterals[0];
-      const colAmount = parseFloat(col.amount);
-      const liqThreshold = col.liquidationThresholdBps / 10_000;
-      if (colAmount > 0 && liqThreshold > 0) {
-        liquidationPriceUsd = simulated.simulatedDebtUsd / (colAmount * liqThreshold);
+      const colAmount = this.parseAmountBigInt(col.amount);
+      const liqThresholdBps = BigInt(this.requireBps(col, 'liquidationThresholdBps'));
+      if (colAmount > 0n && liqThresholdBps > 0n) {
+        const colThresholdUnits = (colAmount * liqThresholdBps) / 10_000n;
+        if (colThresholdUnits > 0n) {
+          liquidationPriceUsd = simulated.simulatedDebtUsd / Number(colThresholdUnits);
+        }
       }
     }
 
@@ -139,6 +142,24 @@ export class SimulationEngine {
     };
   }
 
+  public static parseAmountBigInt(val: string | undefined | null): bigint {
+    if (!val) return 0n;
+    try {
+      const s = String(val).trim();
+      if (!s) return 0n;
+      const b = BigInt(s);
+      return b > 0n ? b : 0n;
+    } catch {
+      return 0n;
+    }
+  }
+
+  private static priceToScaledBigInt(price: number): bigint {
+    const sanitized = SecuritySanitizer.sanitizePositiveNumber(price, 0);
+    if (!Number.isFinite(sanitized) || sanitized <= 0) return 0n;
+    return BigInt(Math.round(sanitized * 1_000_000_000_000));
+  }
+
   /**
    * Pure health calculation from collaterals and borrows.
    */
@@ -146,38 +167,47 @@ export class SimulationEngine {
     collaterals: CollateralInput[],
     borrows: BorrowInput[]
   ) {
-    let totalCollateralUsd = 0;
-    let liquidationThresholdUsd = 0;
-    let maxBorrowUsd = 0;
+    const SCALE = 1_000_000_000_000n;
+    let totalCollateralScaled = 0n;
+    let liquidationThresholdScaled = 0n;
+    let maxBorrowScaled = 0n;
 
     for (const col of collaterals) {
-      const amount = Math.max(0, parseFloat(col.amount || '0'));
-      const price = SecuritySanitizer.sanitizePositiveNumber(col.priceUsd, 0);
-      const assetVal = amount * price;
+      const amount = this.parseAmountBigInt(col.amount);
+      const priceScaled = this.priceToScaledBigInt(col.priceUsd);
+      const assetValScaled = amount * priceScaled;
 
-      totalCollateralUsd += assetVal;
+      totalCollateralScaled += assetValScaled;
       // Strict: a missing factor is an error, not a quiet 0. `|| 0` made an
       // omitted liquidationThresholdBps look identical to an explicit 0 and left
       // the position's threshold understated (issue #1215).
-      liquidationThresholdUsd += (assetVal * this.requireBps(col, 'liquidationThresholdBps')) / 10_000;
-      maxBorrowUsd += (assetVal * this.requireBps(col, 'collateralFactorBps')) / 10_000;
+      const liqBps = BigInt(this.requireBps(col, 'liquidationThresholdBps'));
+      const colBps = BigInt(this.requireBps(col, 'collateralFactorBps'));
+      liquidationThresholdScaled += (assetValScaled * liqBps) / 10_000n;
+      maxBorrowScaled += (assetValScaled * colBps) / 10_000n;
     }
 
-    let totalDebtUsd = 0;
+    let totalDebtScaled = 0n;
     for (const b of borrows) {
-      const principal = Math.max(0, parseFloat(b.borrowedAmount || '0'));
-      const accrued = Math.max(0, parseFloat(b.accruedInterest || '0'));
+      const principal = this.parseAmountBigInt(b.borrowedAmount);
+      const accrued = this.parseAmountBigInt(b.accruedInterest);
       const totalUnits = principal + accrued;
-      const price = SecuritySanitizer.sanitizePositiveNumber(b.priceUsd, 0);
-      totalDebtUsd += totalUnits * price;
+      const priceScaled = this.priceToScaledBigInt(b.priceUsd);
+      totalDebtScaled += totalUnits * priceScaled;
     }
+
+    const totalCollateralUsd = Number(totalCollateralScaled) / Number(SCALE);
+    const liquidationThresholdUsd = Number(liquidationThresholdScaled) / Number(SCALE);
+    const maxBorrowUsd = Number(maxBorrowScaled) / Number(SCALE);
+    const totalDebtUsd = Number(totalDebtScaled) / Number(SCALE);
 
     let simulatedHealthFactorBps = 100_000; // 10.0 default if no debt
     let simulatedHealthFactor = 10.0;
 
-    if (totalDebtUsd > 0) {
-      simulatedHealthFactor = liquidationThresholdUsd / totalDebtUsd;
-      simulatedHealthFactorBps = Math.min(100_000, Math.max(1, Math.floor(simulatedHealthFactor * 10_000)));
+    if (totalDebtScaled > 0n) {
+      const hfBpsBig = (liquidationThresholdScaled * 10_000n) / totalDebtScaled;
+      simulatedHealthFactorBps = Math.min(100_000, Math.max(1, Number(hfBpsBig)));
+      simulatedHealthFactor = Number(liquidationThresholdScaled) / Number(totalDebtScaled);
     }
 
     let simulatedRiskTier: RiskTier = 'Safe';

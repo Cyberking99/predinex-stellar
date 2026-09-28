@@ -1791,13 +1791,18 @@ pub struct UserPoolPosition {
 ///
 /// Fields
 /// ------
-/// - `pool_id`          – pool identifier
-/// - `amount_a`         – user's stake on outcome A (raw units / stroops)
-/// - `amount_b`         – user's stake on outcome B (raw units / stroops)
-/// - `total_bet`        – total tokens staked by the user (`amount_a + amount_b`)
-/// - `lp_shares`        – LP shares held by the user in this pool; 0 if none
-/// - `pending_rewards`  – accrued but unclaimed LP rewards in raw token units
-/// - `claim_status`     – whether the user can claim winnings / a refund
+/// - `pool_id`              – pool identifier
+/// - `amount_a`             – user's stake on outcome A (raw units / stroops)
+/// - `amount_b`             – user's stake on outcome B (raw units / stroops)
+/// - `total_bet`            – total tokens staked by the user (`amount_a + amount_b`)
+/// - `lp_shares`            – LP shares held by the user in this pool; 0 if none
+/// - `pending_rewards`      – accrued but unclaimed LP rewards in raw token units;
+///                            0 when `rewards_unavailable` is true
+/// - `rewards_unavailable`  – true when the LP rewards arithmetic overflowed and
+///                            the real pending amount could not be computed.
+///                            UIs should show "unavailable" rather than "0" in
+///                            this case. (#1258)
+/// - `claim_status`         – whether the user can claim winnings / a refund
 #[derive(Clone)]
 #[contracttype]
 pub struct UserPoolSnapshot {
@@ -1807,6 +1812,9 @@ pub struct UserPoolSnapshot {
     pub total_bet: i128,
     pub lp_shares: i128,
     pub pending_rewards: i128,
+    /// #1258 — set to true when pending_lp_rewards returned an error so callers
+    /// can distinguish a genuine zero-reward position from an unavailable one.
+    pub rewards_unavailable: bool,
     pub claim_status: ClaimStatus,
 }
 
@@ -8549,23 +8557,26 @@ impl PredinexContract {
             };
 
             // Pending LP rewards (mirrors get_pending_lp_rewards logic).
-            let pending_rewards = if lp_position.shares > 0 {
+            // #1258 — propagate arithmetic errors via rewards_unavailable so
+            // the UI can distinguish "zero rewards" from "computation failed".
+            let (pending_rewards, rewards_unavailable) = if lp_position.shares > 0 {
                 let fee_per_share: i128 = env
                     .storage()
                     .persistent()
                     .get(&DataKey::LpFeePerShare(pool_id))
                     .unwrap_or(0);
-                let raw =
-                    Self::pending_lp_rewards(&env, pool_id, &user, &lp_position, fee_per_share)
-                        .unwrap_or((0, 0))
-                        .0;
-                if raw < 0 {
-                    0
-                } else {
-                    raw
+                match Self::pending_lp_rewards(&env, pool_id, &user, &lp_position, fee_per_share) {
+                    Ok((raw, _)) => {
+                        if raw < 0 {
+                            (0, false)
+                        } else {
+                            (raw, false)
+                        }
+                    }
+                    Err(_) => (0, true),
                 }
             } else {
-                0
+                (0, false)
             };
 
             // Claim status (mirrors get_claim_status logic).
@@ -8578,6 +8589,7 @@ impl PredinexContract {
                 total_bet,
                 lp_shares: lp_position.shares,
                 pending_rewards,
+                rewards_unavailable,
                 claim_status,
             });
         }

@@ -66,6 +66,19 @@ export function validateSettlementOutcomesForTest(
   validateSettlementOutcomes(candidates);
 }
 
+/** Errors after submission must never create a second transaction. */
+export function shouldRetrySettlement(error: unknown): boolean {
+  const message = String(error);
+  return !message.includes("Simulation failed") &&
+    !message.includes("Simulation succeeded but settlement results") &&
+    !message.includes("Simulation returned") &&
+    !message.includes("InvalidOutcome") &&
+    !message.includes("PoolNotExpired") &&
+    !message.includes("PoolAlreadySettled") &&
+    !message.includes("did not confirm within polling window") &&
+    !message.includes("Transaction polling aborted");
+}
+
 /**
  * Mirrors the contract's SettleResult struct returned by settle_pools.
  * Each entry represents the outcome for a single pool in the batch.
@@ -300,6 +313,8 @@ export class Executor {
     const startMs = Date.now();
 
     if (this.config.dryRun) {
+      // Dry runs must apply exactly the same input validation as live submits.
+      validateSettlementOutcomes(batch);
       logger.info("[DRY-RUN] Would settle pools (no transaction submitted)", {
         poolIds: batch.map((c) => c.poolId),
       });
@@ -340,13 +355,9 @@ export class Executor {
           label: `settle_pools batch [${batch.map((c) => c.poolId).join(",")}]`,
           // Don't retry simulation errors — they indicate invalid arguments
           // Don't retry PoolAlreadySettled — another instance settled it first
-          shouldRetry: (err) =>
-            !String(err).includes("Simulation failed") &&
-            !String(err).includes("Simulation succeeded but settlement results") &&
-            !String(err).includes("Simulation returned") &&
-            !String(err).includes("InvalidOutcome") &&
-            !String(err).includes("PoolNotExpired") &&
-            !String(err).includes("PoolAlreadySettled"),
+          // Don't retry after submission when confirmation is ambiguous, or
+          // after an explicit shutdown abort.
+          shouldRetry: shouldRetrySettlement,
         },
       );
 

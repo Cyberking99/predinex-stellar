@@ -1,7 +1,7 @@
 /**
  * Webhook notification support.
  *
- * On successful settlement (or in dry-run mode) POSTs a JSON payload to
+ * After any settlement attempt (including all-failure and dry-run cycles), POSTs a JSON payload to
  * the configured WEBHOOK_URL. Optionally signs the payload body with an
  * HMAC-SHA256 signature derived from WEBHOOK_SECRET and includes it as the
  * `X-Predinex-Signature` header so receivers can verify authenticity.

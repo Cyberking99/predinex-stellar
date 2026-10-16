@@ -2,7 +2,7 @@
  * Polling orchestrator.
  *
  * Runs a periodic loop that:
- *   1. Scans all pools for expired-but-unsettled entries.
+ *   1. Scans the next bounded pool window for expired-but-unsettled entries.
  *   2. Determines the winning outcome for each (oracle or default).
  *   3. Batches them into settle_pools calls.
  *   4. Logs and notifies on results.
@@ -341,9 +341,9 @@ export class Poller {
         this.config.batchSize,
       );
 
-      // We need the total pool count for the "scanned" metric but we already
-      // fetched it inside findExpiredUnsettledPools. Re-fetch is cheap enough.
-      poolsScanned = await this.client.getPoolCount();
+      // The client already fetched the count and records the bounded window
+      // size, avoiding a second get_pool_count simulation each cycle.
+      poolsScanned = this.client.getLastScanCount();
       poolsExpiredUnsettled = expired.length;
 
       // Drop failure counters for pools that are no longer candidates (settled
@@ -475,12 +475,14 @@ export class Poller {
       const successfulSettlements = results.filter((r) => r.success);
       if (successfulSettlements.length > 0) {
         this.lastSettlementTs = Date.now();
+      }
+      if (results.length > 0) {
         const cycleContext: SettlementCycleContext = {
           cycleNumber: this.cycleCount,
           instanceId: this.instanceId,
           settlementTimestamp: new Date().toISOString(),
         };
-        await notify(this.config, successfulSettlements, cycleContext);
+        await notify(this.config, results, cycleContext);
       }
 
       logger.info("Settlement cycle complete", {

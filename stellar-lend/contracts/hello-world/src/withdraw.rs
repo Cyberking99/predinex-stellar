@@ -336,6 +336,13 @@ impl EmergencyWithdrawal {
             return Err(EmergencyError::Unauthorized);
         }
 
+        if let Some(sigs) = required_signatures {
+            if sigs == 0 || sigs > (config.secondary_admins.len() + 1) as u32 {
+                return Err(EmergencyError::InsufficientSignatures);
+            }
+            config.required_signatures = sigs;
+        }
+
         if config.status == EmergencyStatus::Normal {
             return Err(EmergencyError::EmergencyNotActive);
         }
@@ -678,10 +685,6 @@ impl EmergencyWithdrawal {
 
         if let Some(amount) = max_withdrawal_amount {
             config.max_withdrawal_amount = amount;
-        }
-
-        if let Some(sigs) = required_signatures {
-            config.required_signatures = sigs;
         }
 
         if let Some(delay) = timelock_delay_secs {

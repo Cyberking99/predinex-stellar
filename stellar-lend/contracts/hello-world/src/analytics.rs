@@ -228,6 +228,12 @@ impl PositionAnalytics {
         borrows: &Vec<BorrowAsset>,
         params: &SimulationParams,
     ) -> Result<SimulationResult, LendError> {
+        if params.price_shocks_bps.len() > MAX_ASSETS_PER_POSITION
+            || params.collateral_delta.len() > MAX_ASSETS_PER_POSITION
+            || params.debt_delta.len() > MAX_ASSETS_PER_POSITION
+        {
+            return Err(LendError::MaxAssetsExceeded);
+        }
         let initial_health = Self::calculate_position_health(env, collaterals, borrows)?;
 
         // Apply price shocks, collateral changes, and debt changes

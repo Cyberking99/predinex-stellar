@@ -1,26 +1,44 @@
-//! Referral tracking crate (minimal scaffold)
-pub struct Referral {}
+#![no_std]
 
-impl Referral {
-    /// Create a new `Referral` handler
-    pub fn new() -> Self {
-        Referral {}
-    }
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, Symbol};
 
-    /// Record a referral pair. Placeholder for real implementation.
-    pub fn record_referral(&self, _referrer: &str, _referred: &str) -> Result<(), &'static str> {
-        // TODO: implement storage, validation, replay protection, and security checks
-        Ok(())
-    }
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum ReferralError {
+    InvalidAddress = 1,
+    AlreadyRecorded = 2,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[contracttype]
+#[derive(Clone)]
+pub enum DataKey {
+    Referral(Address),
+}
 
-    #[test]
-    fn test_record_referral_ok() {
-        let r = Referral::new();
-        assert!(r.record_referral("alice", "bob").is_ok());
+#[contract]
+pub struct Referral;
+
+#[contractimpl]
+impl Referral {
+    /// Records an immutable referrer for a user and emits an auditable event.
+    pub fn record_referral(env: Env, referrer: Address, referred: Address) {
+        if referrer == referred {
+            panic_with_error!(&env, ReferralError::InvalidAddress);
+        }
+        referred.require_auth();
+        let key = DataKey::Referral(referred.clone());
+        if env.storage().persistent().has(&key) {
+            panic_with_error!(&env, ReferralError::AlreadyRecorded);
+        }
+        env.storage().persistent().set(&key, &referrer);
+        env.events().publish(
+            (Symbol::new(&env, "referral_recorded"), referred),
+            referrer,
+        );
+    }
+
+    pub fn get_referrer(env: Env, referred: Address) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Referral(referred))
     }
 }

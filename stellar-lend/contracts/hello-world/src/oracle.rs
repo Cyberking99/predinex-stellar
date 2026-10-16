@@ -13,6 +13,7 @@ pub enum OracleError {
     WindowTooShort,
     StaleSample,
     PriceDeviationExceeded,
+    ArithmeticOverflow,
 }
 
 #[derive(Clone)]
@@ -73,8 +74,12 @@ impl TwapOracle {
                 return Err(OracleError::StaleSample);
             }
 
-            weighted_sum += sample.price * sample.liquidity;
-            total_liquidity += sample.liquidity;
+            weighted_sum = weighted_sum
+                .checked_add(sample.price.checked_mul(sample.liquidity).ok_or(OracleError::ArithmeticOverflow)?)
+                .ok_or(OracleError::ArithmeticOverflow)?;
+            total_liquidity = total_liquidity
+                .checked_add(sample.liquidity)
+                .ok_or(OracleError::ArithmeticOverflow)?;
         }
 
         Ok(TwapReading {

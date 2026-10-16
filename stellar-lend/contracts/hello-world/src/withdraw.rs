@@ -531,6 +531,14 @@ impl EmergencyWithdrawal {
 
         let config = Self::get_config(&env)?;
 
+        // A request is only valid while the emergency that authorized it is
+        // active. Deactivation must invalidate approved requests before their
+        // timelock expires; otherwise a queued request can drain funds during
+        // normal operation.
+        if config.status == EmergencyStatus::Normal {
+            return Err(EmergencyError::EmergencyNotActive);
+        }
+
         if !Self::is_admin(&config, &executor) {
             return Err(EmergencyError::Unauthorized);
         }
@@ -926,5 +934,31 @@ mod tests {
         let request = client.get_request(&request_id).unwrap();
         assert_eq!(request.amount, 500_000);
         assert_eq!(request.status, WithdrawalRequestStatus::Pending);
+    }
+
+    #[test]
+    fn approved_request_cannot_execute_after_emergency_deactivation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contract_id = env.register(EmergencyWithdrawal, ());
+        let client = EmergencyWithdrawalClient::new(&env, &contract_id);
+        client.initialize(&admin, &1_000_000);
+        let reason = String::from_str(&env, "Emergency test");
+        client.activate_emergency(&admin, &reason);
+        let request_id = client.request_withdrawal(
+            &admin,
+            &recipient,
+            &500_000,
+            &token,
+            &reason,
+        );
+        client.approve_withdrawal(&admin, &request_id);
+        client.deactivate_emergency(&admin, &reason);
+        env.ledger().set_timestamp(10_000);
+
+        assert!(client.try_execute_withdrawal(&admin, &request_id).is_err());
     }
 }

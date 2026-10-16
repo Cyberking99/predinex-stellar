@@ -103,12 +103,27 @@ impl TwapOracle {
         } else {
             twap_price - spot_price
         };
-        let deviation_bps = ((delta * 10_000) / twap_price) as u32;
+        let deviation_bps = delta
+            .checked_mul(10_000)
+            .ok_or(OracleError::PriceDeviationExceeded)?
+            .checked_div(twap_price)
+            .ok_or(OracleError::InvalidPrice)?;
 
-        if deviation_bps > max_deviation_bps {
+        if deviation_bps > i128::from(max_deviation_bps) {
             return Err(OracleError::PriceDeviationExceeded);
         }
 
-        Ok(deviation_bps)
+        Ok(deviation_bps as u32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_deviation_that_does_not_fit_u32() {
+        let result = TwapOracle::validate_spot_price(4_294_967_296, 1, u32::MAX);
+        assert_eq!(result, Err(OracleError::PriceDeviationExceeded));
     }
 }

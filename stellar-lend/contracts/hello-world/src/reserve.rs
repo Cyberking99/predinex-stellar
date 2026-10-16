@@ -99,6 +99,9 @@ impl InsuranceMarketplace {
         pool: &mut InsurancePool,
         shares: i128,
     ) -> Result<i128, LendError> {
+        if pool.is_paused {
+            return Err(LendError::StateLocked);
+        }
         if shares <= 0 || shares > pool.total_shares {
             return Err(LendError::InvalidParameter);
         }
@@ -380,5 +383,33 @@ impl InsuranceMarketplace {
             available_liquidity: pool.available_reserves,
             utilization_rate_bps,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env};
+
+    #[test]
+    fn paused_pool_rejects_capital_withdrawal() {
+        let env = Env::default();
+        let pool = &mut InsurancePool {
+            pool_id: 1,
+            underwriting_asset: Address::generate(&env),
+            total_staked: 100,
+            total_shares: 100,
+            active_cover_amount: 0,
+            available_reserves: 100,
+            max_capacity: 1_000,
+            min_solvency_ratio_bps: 10_000,
+            base_premium_rate_bps: 100,
+            utilization_multiplier_bps: 100,
+            is_paused: true,
+        };
+        assert_eq!(
+            InsuranceMarketplace::withdraw_capital(&env, pool, 1),
+            Err(LendError::StateLocked)
+        );
     }
 }

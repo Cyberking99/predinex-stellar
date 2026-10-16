@@ -61,12 +61,23 @@ impl MevProtection {
             return Err(MevGuardError::QuoteStale);
         }
 
-        if now < operation.submitted_at + config.min_order_delay_secs {
+        let eligible_at = operation
+            .submitted_at
+            .checked_add(config.min_order_delay_secs)
+            .ok_or(MevGuardError::DelayNotElapsed)?;
+        if now < eligible_at {
             return Err(MevGuardError::DelayNotElapsed);
         }
 
-        let impact_bps = ((operation.amount * 10_000) / quote.liquidity_depth) as u32;
-        if impact_bps > config.max_price_impact_bps {
+        // Keep the calculation wide until after the cap comparison. Casting
+        // an attacker-controlled ratio to u32 could wrap large impacts to 0.
+        let impact_bps = operation
+            .amount
+            .checked_mul(10_000)
+            .ok_or(MevGuardError::PriceImpactExceeded)?
+            .checked_div(quote.liquidity_depth)
+            .ok_or(MevGuardError::LiquidityUnavailable)?;
+        if impact_bps > i128::from(config.max_price_impact_bps) {
             return Err(MevGuardError::PriceImpactExceeded);
         }
 
@@ -89,6 +100,66 @@ impl MevProtection {
             actual - expected
         };
 
-        Ok(((delta * 10_000) / expected) as u32)
+        let bps = delta
+            .checked_mul(10_000)
+            .ok_or(MevGuardError::SlippageExceeded)?
+            .checked_div(expected)
+            .ok_or(MevGuardError::SlippageExceeded)?;
+        if bps > i128::from(u32::MAX) {
+            return Err(MevGuardError::SlippageExceeded);
+        }
+        Ok(bps as u32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> MevGuardConfig {
+        MevGuardConfig {
+            max_price_impact_bps: 100,
+            max_slippage_bps: 100,
+            min_order_delay_secs: 60,
+            stale_quote_secs: 3_600,
+        }
+    }
+
+    #[test]
+    fn rejects_large_impact_before_narrowing() {
+        let result = MevProtection::validate_operation(
+            LendingOperation {
+                amount: 4_294_967_296,
+                submitted_at: 0,
+            },
+            LendingQuote {
+                quoted_price: 100,
+                execution_price: 100,
+                liquidity_depth: 10_000,
+                observed_at: 100,
+            },
+            config(),
+            60,
+        );
+        assert_eq!(result, Err(MevGuardError::PriceImpactExceeded));
+    }
+
+    #[test]
+    fn rejects_delay_timestamp_overflow() {
+        let result = MevProtection::validate_operation(
+            LendingOperation {
+                amount: 1,
+                submitted_at: u64::MAX,
+            },
+            LendingQuote {
+                quoted_price: 100,
+                execution_price: 100,
+                liquidity_depth: 1_000,
+                observed_at: 0,
+            },
+            config(),
+            100,
+        );
+        assert_eq!(result, Err(MevGuardError::DelayNotElapsed));
     }
 }

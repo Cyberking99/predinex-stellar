@@ -56,6 +56,13 @@ export class AuthValidator {
     if (role === 'Assessor') this.assessorKeys.add(apiKey);
   }
 
+  /** True when `apiKey` was registered for any role (a verified identity). */
+  public isRegisteredKey(apiKey: string): boolean {
+    return (
+      this.adminKeys.has(apiKey) || this.officerKeys.has(apiKey) || this.assessorKeys.has(apiKey)
+    );
+  }
+
   public authenticate(headers: Record<string, string | undefined>): AuthContext {
     const apiKey = headers['x-api-key'];
     if (!apiKey) {

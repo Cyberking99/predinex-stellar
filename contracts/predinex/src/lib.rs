@@ -36,6 +36,7 @@ mod multi_user_tests;
 mod pause_tests;
 mod pool_categories_tests;
 mod protocol_fee_tests;
+mod settlement_tests;
 mod test;
 mod validation_hardening_tests;
 mod validation_prop_tests;

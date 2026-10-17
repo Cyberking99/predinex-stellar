@@ -10,6 +10,7 @@
  *   /api/emergency    emergency controls (admin-gated mutations, real txs)
  *   /api/gas-estimate gas estimation + optimization suggestions
  *   /api/insurance    insurance pools, quotes, purchases, claims
+ *   /api/markets      paginated market list (limit/offset, see #1420)
  *   /api/referral     validated, authenticated referral registration
  *   /api/reputation   reputation profiles, simulation, leaderboard
  *   /api/simulation   position-health simulation
@@ -32,10 +33,12 @@ import { complianceRouter } from './routes/compliance.js';
 import { emergencyRouter } from './routes/emergency.js';
 import { gasEstimateRouter } from './routes/gasEstimate.js';
 import { insuranceRouter } from './routes/insurance.js';
+import { marketsRouter } from './routes/markets.js';
 import { createReferralRouter, defaultReferralService } from './routes/referral.js';
 import { reputationRouter } from './routes/reputation.js';
 import { simulationRouter } from './routes/simulation.js';
-import { rateLimitMiddleware } from './middleware/rate-limit.js';
+import { rateLimitMiddleware, setDefaultTokenVerifier } from './middleware/rate-limit.js';
+import { sharedAuthValidator } from './middleware/auth.js';
 import { openApiDoc } from './config/swagger.js';
 
 export const API_VERSION = '1.0.0';
@@ -95,6 +98,9 @@ export function createApp(): Express {
   app.use(morgan('combined'));
 
   // Global rate limiting; routers add auth + stricter per-route limits.
+  // Registered API keys get their own bucket; everyone else is limited per IP
+  // (see #1423).
+  setDefaultTokenVerifier((apiKey) => sharedAuthValidator.isRegisteredKey(apiKey));
   app.use(rateLimitMiddleware);
 
   // 3. Health checks.
@@ -115,6 +121,7 @@ export function createApp(): Express {
   app.use('/api/emergency', emergencyRouter);
   app.use('/api/gas-estimate', gasEstimateRouter);
   app.use('/api/insurance', insuranceRouter);
+  app.use('/api/markets', marketsRouter);
   app.use('/api/referral', createReferralRouter(defaultReferralService));
   app.use('/api/reputation', reputationRouter);
   app.use('/api/simulation', simulationRouter);

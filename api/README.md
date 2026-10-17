@@ -45,7 +45,41 @@ fresh random value per deployment. The test suite generates a random
 compliance routes require an `x-api-key` header with the matching role and
 are rate-limited; all routes apply shared auth + rate-limit middleware.
 
+### Rate limiting
+
+Every route is rate-limited. Callers sending an `x-api-key` registered in
+`ADMIN_API_KEYS`, `OFFICER_API_KEYS` or `ASSESSOR_API_KEYS` get their own
+bucket; everyone else is limited per client IP (unregistered keys do not get a
+separate bucket, so rotating them does not bypass the limit). Responses carry
+`RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset`; a throttled
+request gets HTTP `429` with a `Retry-After` header (seconds).
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Window length in milliseconds |
+| `RATE_LIMIT_MAX_REQUESTS` | `100` | Requests per window on general routes |
+| `RATE_LIMIT_STRICT_MAX_REQUESTS` | `20` | Requests per window on mutating / emergency routes |
+
+Values that are missing or not positive integers fall back to the default.
+
 ## API Endpoints
+
+### GET /api/markets
+List markets one page at a time, ordered by ascending market id.
+
+Query parameters: `limit` (1-100, default 20; larger values are capped at 100)
+and `offset` (default 0). Invalid values return `400 VALIDATION_ERROR`. An
+offset past the end returns an empty `data` array.
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": [{ "id": 21, "title": "...", "outcomes": ["Yes", "No"], "status": "open", "expiry": 1700000021, "totalVolume": "21000" }],
+  "pagination": { "total": 45, "limit": 10, "offset": 20, "count": 10, "hasMore": true, "nextOffset": 30, "prevOffset": 10 },
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
 
 ### POST /api/budget/plan
 Create a budget plan

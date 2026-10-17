@@ -517,6 +517,32 @@ export const openApiDoc = {
     '/api/insurance/health': {
       get: { summary: 'Insurance service health', responses: { '200': { description: 'OK' } } },
     },
+    '/api/markets': {
+      get: {
+        summary: 'List markets (paginated, ordered by ascending id)',
+        parameters: [
+          {
+            name: 'limit',
+            in: 'query',
+            required: false,
+            description: 'Page size, 1-100 (default 20; larger values are capped at 100)',
+            schema: { type: 'integer', minimum: 1, default: 20 },
+          },
+          {
+            name: 'offset',
+            in: 'query',
+            required: false,
+            description: 'Zero-based index of the first market to return (default 0)',
+            schema: { type: 'integer', minimum: 0, default: 0 },
+          },
+        ],
+        responses: {
+          '200': { description: 'Page of markets with pagination metadata (total, nextOffset, hasMore)' },
+          '400': { description: 'Invalid pagination parameters' },
+          '429': { description: 'Rate limited; see the Retry-After header' },
+        },
+      },
+    },
     '/api/referral': {
       post: { summary: 'Create a referral', security: [{ apiKey: [] }], responses: { '200': { description: 'Success' } } },
     },

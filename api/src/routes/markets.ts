@@ -19,6 +19,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { rateLimitMiddleware } from '../middleware/rate-limit.js';
 import { buildPageMeta, parsePagination } from '../services/pagination.js';
+import { requireAdmin, AuthContext, sharedAuthValidator } from '../middleware/auth.js';
 
 export type MarketStatus = 'open' | 'settled' | 'voided' | 'cancelled';
 
@@ -31,6 +32,17 @@ export interface MarketSummary {
   totalVolume: string;
 }
 
+export interface MarketMetrics {
+  totalMarkets: number;
+  openMarkets: number;
+  settledMarkets: number;
+  voidedMarkets: number;
+  cancelledMarkets: number;
+  totalVolume: string;
+  topMarketsByVolume: MarketSummary[];
+  topMarketsByParticipants: Array<MarketSummary & { participantCount?: number }>;
+}
+
 /**
  * Backing store for the market list. Implementations must return markets in
  * ascending `id` order so offsets map to the same items between requests.
@@ -38,18 +50,54 @@ export interface MarketSummary {
 export interface MarketSource {
   count(): Promise<number>;
   list(offset: number, limit: number): Promise<MarketSummary[]>;
+  getMetrics?(): Promise<MarketMetrics>;
+  invalidateCache?(): void;
 }
 
-/** In-memory source; keeps markets sorted by id. */
+interface CacheEntry<T> {
+  data: T;
+  expiresAt: number;
+}
+
+/** In-memory source; keeps markets sorted by id with optional TTL-based caching. */
 export class InMemoryMarketSource implements MarketSource {
   private markets: MarketSummary[];
+  private cache: Map<string, CacheEntry<any>> = new Map();
+  private cacheTtlMs: number;
 
-  constructor(markets: MarketSummary[] = []) {
+  constructor(markets: MarketSummary[] = [], cacheTtlMs: number = 300000) {
     this.markets = [...markets].sort((a, b) => a.id - b.id);
+    this.cacheTtlMs = cacheTtlMs;
   }
 
   public setMarkets(markets: MarketSummary[]): void {
     this.markets = [...markets].sort((a, b) => a.id - b.id);
+    this.invalidateCache();
+  }
+
+  public invalidateCache(): void {
+    this.cache.clear();
+  }
+
+  private isCacheValid<T>(key: string): boolean {
+    const entry = this.cache.get(key);
+    if (!entry) return false;
+    return Date.now() < entry.expiresAt;
+  }
+
+  private getFromCache<T>(key: string): T | null {
+    if (!this.isCacheValid(key)) {
+      this.cache.delete(key);
+      return null;
+    }
+    return this.cache.get(key)?.data as T;
+  }
+
+  private setCache<T>(key: string, data: T): void {
+    this.cache.set(key, {
+      data,
+      expiresAt: Date.now() + this.cacheTtlMs,
+    });
   }
 
   public async count(): Promise<number> {
@@ -58,6 +106,30 @@ export class InMemoryMarketSource implements MarketSource {
 
   public async list(offset: number, limit: number): Promise<MarketSummary[]> {
     return this.markets.slice(offset, offset + limit);
+  }
+
+  public async getMetrics(): Promise<MarketMetrics> {
+    const cacheKey = 'metrics';
+    const cached = this.getFromCache<MarketMetrics>(cacheKey);
+    if (cached) return cached;
+
+    const metrics: MarketMetrics = {
+      totalMarkets: this.markets.length,
+      openMarkets: this.markets.filter((m) => m.status === 'open').length,
+      settledMarkets: this.markets.filter((m) => m.status === 'settled').length,
+      voidedMarkets: this.markets.filter((m) => m.status === 'voided').length,
+      cancelledMarkets: this.markets.filter((m) => m.status === 'cancelled').length,
+      totalVolume: this.markets
+        .reduce((sum, m) => sum + BigInt(m.totalVolume || '0'), BigInt(0))
+        .toString(),
+      topMarketsByVolume: [...this.markets]
+        .sort((a, b) => BigInt(b.totalVolume || '0') - BigInt(a.totalVolume || '0'))
+        .slice(0, 10),
+      topMarketsByParticipants: [...this.markets].slice(0, 10),
+    };
+
+    this.setCache(cacheKey, metrics);
+    return metrics;
   }
 }
 
@@ -90,6 +162,45 @@ export function createMarketsRouter(source: MarketSource = defaultMarketSource):
         success: true,
         data,
         pagination: buildPageMeta(total, params, data.length),
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Admin-only metrics endpoint (#1432)
+  router.get('/admin/metrics', async (req: Request, res: Response, next: NextFunction) => {
+    const authContext: AuthContext = sharedAuthValidator.authenticate(
+      req.headers as Record<string, string | undefined>
+    );
+
+    if (authContext.role !== 'Admin') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Admin access required',
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    try {
+      const metrics = source.getMetrics ? await source.getMetrics() : {
+        totalMarkets: await source.count(),
+        openMarkets: 0,
+        settledMarkets: 0,
+        voidedMarkets: 0,
+        cancelledMarkets: 0,
+        totalVolume: '0',
+        topMarketsByVolume: [],
+        topMarketsByParticipants: [],
+      };
+
+      res.json({
+        success: true,
+        data: metrics,
         timestamp: new Date().toISOString(),
       });
     } catch (err) {

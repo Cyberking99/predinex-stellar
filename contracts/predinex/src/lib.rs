@@ -762,14 +762,14 @@ fn emit_pool_created_from_template(env: &Env, template_id: u32, pool_id: u32) {
     );
 }
 
-fn emit_pool_disputed(env: &Env, pool_id: u32, caller: Address) {
+fn emit_pool_disputed(env: &Env, pool_id: u32, caller: Address, disputed_outcome: u32) {
     env.events().publish(
         (
             Symbol::new(env, "pool_disputed"),
             event_version(env),
             pool_id,
         ),
-        caller,
+        (caller, disputed_outcome),
     );
 }
 
@@ -1021,6 +1021,8 @@ pub enum DataKey {
     PoolSettlementSource(u32),
     /// Pre-dispute status stored prior to pool dispute transition.
     PoolPreDisputeStatus(u32),
+    /// #1407 — Outcome index that was under dispute when the pool was marked Disputed.
+    PoolDisputedOutcome(u32),
     /// Maximum allowed total pool size. 0 disables the cap.
     MaxPoolSize,
     /// Threshold at/above which the pool enters automatic cooling. 0 disables.
@@ -1171,6 +1173,9 @@ pub enum DataKey {
     PoolExtMetadata(u32),
     /// #705 — Total exposure (outstanding bets) for a user in a specific pool.
     UserExposurePerPool(Address, u32),
+    /// #1404 — Cumulative normalised stake for a user per token per pool.
+    /// Used to enforce per-token max-bet limits across multiple calls.
+    UserTokenExposure(u32, Address, Address),
     /// #705 — Max exposure per pool as percentage of pool volume (basis points).
     /// e.g., 1000 = 10% of pool volume. 0 disables the cap.
     UserMaxExposurePerPoolBps,
@@ -7817,6 +7822,14 @@ impl PredinexContract {
             .unwrap_or(DISPUTE_WINDOW_SECS)
     }
 
+    /// #1407 — Return the outcome index that was under dispute when the pool
+    /// was marked Disputed, or `None` if the pool has never been disputed.
+    pub fn get_disputed_outcome(env: Env, pool_id: u32) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PoolDisputedOutcome(pool_id))
+    }
+
     pub fn set_dispute_window(
         env: Env,
         caller: Address,
@@ -7877,6 +7890,22 @@ impl PredinexContract {
             .persistent()
             .set(&DataKey::PoolPreDisputeStatus(pool_id), &pool.status);
 
+        // #1407 — Extract and persist the settled outcome that is being disputed
+        // so the UI, indexers, and resolvers can identify which resolution is
+        // under review without having to reconstruct it from the pre-dispute status.
+        let disputed_outcome: u32 = match pool.status {
+            PoolStatus::Settled(o) => o,
+            _ => 0,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::PoolDisputedOutcome(pool_id), &disputed_outcome);
+        env.storage().persistent().extend_ttl(
+            &DataKey::PoolDisputedOutcome(pool_id),
+            POOL_BUMP_THRESHOLD,
+            POOL_BUMP_TARGET,
+        );
+
         pool.status = PoolStatus::Disputed;
         env.storage()
             .persistent()
@@ -7887,7 +7916,7 @@ impl PredinexContract {
             POOL_BUMP_TARGET,
         );
 
-        emit_pool_disputed(&env, pool_id, caller);
+        emit_pool_disputed(&env, pool_id, caller, disputed_outcome);
         Ok(())
     }
 
@@ -9949,6 +9978,25 @@ impl PredinexContract {
             return Err(ContractError::BetAboveMaxBet);
         }
 
+        // #1404 — Enforce a cumulative per-user-per-token exposure cap to
+        // prevent the same token from being submitted across multiple calls,
+        // each individually within the per-call max, but exceeding it in
+        // aggregate. Track the user's running normalised stake for this token
+        // in this pool and reject if adding this bet would breach the limit.
+        let user_token_key =
+            DataKey::UserTokenExposure(pool_id, user.clone(), bet_token.clone());
+        let prev_token_exposure: i128 = env
+            .storage()
+            .persistent()
+            .get(&user_token_key)
+            .unwrap_or(0);
+        let new_token_exposure = prev_token_exposure
+            .checked_add(normalized)
+            .ok_or(ContractError::PoolTotalOverflow)?;
+        if max_bet > 0 && new_token_exposure > max_bet {
+            return Err(ContractError::DuplicateToken);
+        }
+
         // Enforce pool-wide bet limits (admin-configurable via set_pool_bet_limits).
         // Checked against the normalised amount so the same cap applies uniformly
         // across all accepted tokens, matching the behaviour of single-asset place_bet.
@@ -10064,23 +10112,60 @@ impl PredinexContract {
                 .extend_ttl(&key, POOL_BUMP_THRESHOLD, POOL_BUMP_TARGET);
         }
 
+        // #1405 — Measure the balance delta around the transfer so that
+        // fee-on-transfer tokens are recorded at the amount actually received,
+        // not the amount requested. Contracts that deduct a fee on transfer
+        // deliver less than `amount`; recording `amount` would overstate the
+        // pool's holdings and cause later claims to fail with a short balance.
+        let token_client = token::Client::new(&env, &bet_token);
+        let balance_before: i128 =
+            token_client.balance(&env.current_contract_address());
+
         // Transfer bet_token from user to contract.
-        token::Client::new(&env, &bet_token).transfer(
+        token_client.transfer(
             &user,
             env.current_contract_address(),
             &amount,
         );
 
-        // Track cumulative deposit per token.
+        let balance_after: i128 =
+            token_client.balance(&env.current_contract_address());
+        let received = balance_after
+            .checked_sub(balance_before)
+            .ok_or(ContractError::PoolTotalOverflow)?;
+
+        // Track cumulative deposit per token using the actually-received amount.
         let deposit_key = DataKey::PoolTokenDeposit(pool_id, bet_token.clone());
         let prev_deposit: i128 = env.storage().persistent().get(&deposit_key).unwrap_or(0);
         let new_deposit = prev_deposit
-            .checked_add(amount)
+            .checked_add(received)
             .ok_or(ContractError::PoolTotalOverflow)?;
         env.storage().persistent().set(&deposit_key, &new_deposit);
         env.storage()
             .persistent()
             .extend_ttl(&deposit_key, POOL_BUMP_THRESHOLD, POOL_BUMP_TARGET);
+
+        // #1404 — Persist updated per-user-per-token exposure so future calls
+        // see the correct cumulative stake and limits are correctly enforced.
+        env.storage()
+            .persistent()
+            .set(&user_token_key, &new_token_exposure);
+        env.storage().persistent().extend_ttl(
+            &user_token_key,
+            POOL_BUMP_THRESHOLD,
+            POOL_BUMP_TARGET,
+        );
+
+        // #1404 — Persist updated per-user-per-token exposure so future calls
+        // see the correct cumulative stake and limits are correctly enforced.
+        env.storage()
+            .persistent()
+            .set(&user_token_key, &new_token_exposure);
+        env.storage().persistent().extend_ttl(
+            &user_token_key,
+            POOL_BUMP_THRESHOLD,
+            POOL_BUMP_TARGET,
+        );
 
         // Update pool totals and user positions using the normalised amount
         // (same path as regular place_bet, so odds and claims work identically).
@@ -10317,6 +10402,14 @@ impl PredinexContract {
             );
             emit_pool_cooling_started(&env, pool_id, cooling_until, new_total);
         }
+
+        // #1404 — Update the pool-wide user exposure tracker and persist
+        // daily/weekly loss state, mirroring single-asset place_bet. Without
+        // these calls the per-pool exposure cap is never written back, so
+        // repeated calls with the same or different tokens bypass the limit.
+        Self::update_user_exposure(&env, &user, pool_id, normalized);
+        Self::record_user_bet_limits_state(&env, &user, pool_id, normalized);
+
         Ok(())
     }
 
@@ -11578,6 +11671,21 @@ impl PredinexContract {
     pub fn claim_lp_rewards(env: Env, user: Address, pool_id: u32) -> Result<i128, ContractError> {
         user.require_auth();
         Self::require_not_paused(&env)?;
+
+        // #1406 — Block LP reward payouts while a pool is frozen or disputed.
+        // A pool frozen for investigation must not distribute funds until the
+        // freeze is lifted; this mirrors the check in claim_winnings_internal.
+        let pool: Pool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Pool(pool_id))
+            .ok_or(ContractError::PoolNotFound)?;
+        if pool.status == PoolStatus::Frozen {
+            return Err(ContractError::PoolIsFrozen);
+        }
+        if pool.status == PoolStatus::Disputed {
+            return Err(ContractError::PoolIsDisputed);
+        }
         let mut position: LpPosition = env
             .storage()
             .persistent()

@@ -23,6 +23,7 @@ export class RateLimiter {
   private clients = new Map<string, ClientTracker>();
   private windowMs: number;
   private maxRequests: number;
+  private nextCleanupAt = 0;
 
   constructor(options?: Partial<RateLimitOptions>) {
     this.windowMs = options?.windowMs ?? 60_000; // 1 minute
@@ -35,6 +36,7 @@ export class RateLimiter {
     remaining: number;
     resetMs: number;
   } {
+    this.removeExpiredClients(now);
     const existing = this.clients.get(clientId);
 
     if (!existing || now >= existing.resetTime) {
@@ -69,6 +71,15 @@ export class RateLimiter {
     };
   }
 
+  /** Periodically remove idle buckets so expired clients do not accumulate. */
+  private removeExpiredClients(now: number): void {
+    if (now < this.nextCleanupAt) return;
+    for (const [clientId, tracker] of this.clients) {
+      if (now >= tracker.resetTime) this.clients.delete(clientId);
+    }
+    this.nextCleanupAt = now + this.windowMs;
+  }
+
   public reset(clientId?: string): void {
     if (clientId) {
       this.clients.delete(clientId);
@@ -91,13 +102,10 @@ export const strictRateLimiter = new RateLimiter({
 });
 
 function clientIdFor(req: Request): string {
-  const apiKey = req.headers['x-api-key'];
-  if (typeof apiKey === 'string' && apiKey.length > 0) return `key:${apiKey}`;
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.length > 0) {
-    return `ip:${forwarded.split(',')[0].trim()}`;
-  }
-  return `ip:${req.ip || 'unknown'}`;
+  // Request headers are supplied by the caller and are not verified identities.
+  // Express only trusts proxy headers when the app explicitly configures trusted
+  // proxy hops; with the default configuration req.ip resolves to the socket.
+  return `ip:${req.ip || req.socket?.remoteAddress || 'unknown'}`;
 }
 
 /**

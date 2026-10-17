@@ -146,7 +146,25 @@ impl StellarLendContract {
         is_default: bool,
         current_time: u64,
     ) -> Result<UserReputation, LendError> {
-        caller.require_auth();
+        // #1369 — Authenticate against the stored admin rather than the
+        // caller-supplied address; otherwise anyone can call this with their own
+        // address and mint Platinum reputation for any user.
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(LendError::Unauthorized)?;
+        if caller != admin {
+            return Err(LendError::Unauthorized);
+        }
+        admin.require_auth();
+
+        // #1369 (secondary) — Reject a negative repayment_volume before it is
+        // cast to u32; a negative value wraps to a huge u32 whose .min(50)
+        // returns the maximum volume bonus and inflates the score.
+        if repayment_volume < 0 {
+            return Err(LendError::InvalidParameter);
+        }
 
         let mut rep = env
             .storage()
@@ -399,7 +417,17 @@ impl StellarLendContract {
         claim_id: u64,
         approve: bool,
     ) -> Result<i128, LendError> {
-        assessor.require_auth();
+        // #1368 — Require the stored admin to authorise every assessment so that
+        // a claimant cannot pass their own address as assessor and self-approve.
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(LendError::Unauthorized)?;
+        if assessor != admin {
+            return Err(LendError::Unauthorized);
+        }
+        admin.require_auth();
         let mut claim: InsuranceClaim = env
             .storage()
             .persistent()

@@ -1109,6 +1109,10 @@ pub enum DataKey {
     ReferralBalance(Address),
     /// #420 — Total volume generated through referrals across all referrers.
     TotalReferralVolume,
+    /// #1271 — Sum of all outstanding ReferralBalance entries. Incremented when
+    /// a reward is credited and decremented when it is claimed, so rescue_tokens
+    /// can treat the aggregate as a liability.
+    TotalPendingReferralRewards,
     /// #1232 — Cumulative amount already paid out of a multi-asset pool in a
     /// specific token (in that token's own units). Recorded so the final-claim
     /// dust sweep can bound itself to the settling pool's own remainder instead
@@ -9217,6 +9221,21 @@ impl PredinexContract {
                     .persistent()
                     .extend_ttl(&key, POOL_BUMP_THRESHOLD, POOL_BUMP_TARGET);
 
+                // #1271 — Track the aggregate outstanding referral liability so
+                // rescue_tokens can exclude it from rescueable balance.
+                let pending_key = DataKey::TotalPendingReferralRewards;
+                let pending: i128 = env
+                    .storage()
+                    .persistent()
+                    .get::<_, i128>(&pending_key)
+                    .unwrap_or(0);
+                let next_pending = pending
+                    .checked_add(reward)
+                    .ok_or(ContractError::TreasuryOverflow)?;
+                env.storage()
+                    .persistent()
+                    .set(&pending_key, &next_pending);
+
                 let total: i128 = env
                     .storage()
                     .persistent()
@@ -9249,6 +9268,17 @@ impl PredinexContract {
             .ok_or(ContractError::NotInitialized)?;
         let token_client = token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &referrer, &balance);
+
+        // #1271 — Reduce the aggregate pending liability to match the payout.
+        let pending_key = DataKey::TotalPendingReferralRewards;
+        let pending: i128 = env
+            .storage()
+            .persistent()
+            .get::<_, i128>(&pending_key)
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&pending_key, &pending.saturating_sub(balance));
 
         env.storage().persistent().remove(&key);
 
@@ -10445,6 +10475,17 @@ impl PredinexContract {
                 .unwrap_or(0);
             total_liabilities = total_liabilities
                 .checked_add(current_treasury)
+                .ok_or(ContractError::PoolTotalOverflow)?;
+
+            // #1271 — Outstanding referral rewards are funded from the contract
+            // balance and must be excluded from rescueable funds.
+            let pending_referral: i128 = env
+                .storage()
+                .persistent()
+                .get::<_, i128>(&DataKey::TotalPendingReferralRewards)
+                .unwrap_or(0);
+            total_liabilities = total_liabilities
+                .checked_add(pending_referral)
                 .ok_or(ContractError::PoolTotalOverflow)?;
         }
 

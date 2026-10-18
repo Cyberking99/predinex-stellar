@@ -108,22 +108,79 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
 }
 
 /** Runs `fn` inside a child span of the active context (DB calls, indexer jobs). */
-export async function withSpan<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  return trace.getTracer(TRACER_NAME).startActiveSpan(name, async (span) => {
-    try {
-      return await fn();
-    } catch (err) {
-      span.recordException(err as Error);
-      span.setStatus({ code: SpanStatusCode.ERROR });
-      throw err;
-    } finally {
-      span.end();
+export async function withSpan<T>(
+  name: string,
+  fn: () => Promise<T>,
+  attributes?: Record<string, string | number | boolean>
+): Promise<T> {
+  return trace.getTracer(TRACER_NAME).startActiveSpan(
+    name,
+    { attributes },
+    async (span) => {
+      try {
+        return await fn();
+      } catch (err) {
+        span.recordException(err as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR });
+        throw err;
+      } finally {
+        span.end();
+      }
     }
-  });
+  );
 }
 
 /** Adds the active trace context (`traceparent`) to outgoing request headers. */
 export function injectTraceHeaders(headers: Record<string, string> = {}): Record<string, string> {
   propagation.inject(context.active(), headers);
   return headers;
+}
+
+export interface TracedJobPayload<T = unknown> {
+  payload: T;
+  traceContext: Record<string, string>;
+}
+
+/**
+ * Wraps a queued job payload with the current active trace/span context so
+ * background workers can continue the HTTP trace end-to-end.
+ */
+export function injectJobTraceContext<T>(payload: T): TracedJobPayload<T> {
+  return {
+    payload,
+    traceContext: injectTraceHeaders({}),
+  };
+}
+
+/**
+ * Runs a background worker / queued job handler within the propagated trace
+ * context extracted from `traceContext` (or headers), emitting a CONSUMER span.
+ */
+export async function withJobSpan<T>(
+  name: string,
+  traceContext: Record<string, string | undefined> | undefined,
+  fn: () => Promise<T>,
+  attributes?: Record<string, string | number | boolean>
+): Promise<T> {
+  const parent = traceContext
+    ? propagation.extract(ROOT_CONTEXT, traceContext)
+    : context.active();
+  return trace
+    .getTracer(TRACER_NAME)
+    .startActiveSpan(
+      name,
+      { kind: SpanKind.CONSUMER, attributes },
+      parent,
+      async (span) => {
+        try {
+          return await fn();
+        } catch (err) {
+          span.recordException(err as Error);
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          throw err;
+        } finally {
+          span.end();
+        }
+      }
+    );
 }

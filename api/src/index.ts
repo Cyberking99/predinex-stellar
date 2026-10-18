@@ -14,6 +14,8 @@ export * from './app.js';
 export * from './middleware/rate-limit.js';
 export * from './middleware/auth.js';
 export * from './middleware/security.js';
+export * from './middleware/tracing.js';
+export * from './middleware/versioning.js';
 export * from './services/simulation-engine.js';
 export * from './services/insurance-engine.js';
 export * from './services/compliance-engine.js';

@@ -20,6 +20,7 @@ import type { BotConfig } from "./config.js";
 import type { Pool, PoolStatus } from "./types.js";
 import { logger } from "./logger.js";
 import { withRetry } from "./retry.js";
+import { withWorkerSpan } from "./tracing.js";
 
 /** Maximum ledger sequence validity window for simulation txns (5 min at ~5s/ledger) */
 const SIMULATE_TIMEOUT_SECS = 60;
@@ -38,47 +39,52 @@ async function simulateContractCall(
   args: xdr.ScVal[],
   config: BotConfig,
 ): Promise<unknown> {
-  return withRetry(
-    async () => {
-      const sourceAccount = await server.getAccount(sourcePublicKey);
+  return withWorkerSpan(
+    `contract.call.${functionName}`,
+    () =>
+      withRetry(
+        async () => {
+          const sourceAccount = await server.getAccount(sourcePublicKey);
 
-      const contract = new Contract(contractId);
-      const tx = new TransactionBuilder(sourceAccount, {
-        fee: "100",
-        networkPassphrase,
-      })
-        .addOperation(contract.call(functionName, ...args))
-        .setTimeout(SIMULATE_TIMEOUT_SECS)
-        .build();
+          const contract = new Contract(contractId);
+          const tx = new TransactionBuilder(sourceAccount, {
+            fee: "100",
+            networkPassphrase,
+          })
+            .addOperation(contract.call(functionName, ...args))
+            .setTimeout(SIMULATE_TIMEOUT_SECS)
+            .build();
 
-      const result = await server.simulateTransaction(tx);
+          const result = await server.simulateTransaction(tx);
 
-      if (rpc.Api.isSimulationError(result)) {
-        throw new Error(
-          `Simulation error for ${functionName}: ${result.error}`,
-        );
-      }
+          if (rpc.Api.isSimulationError(result)) {
+            throw new Error(
+              `Simulation error for ${functionName}: ${result.error}`,
+            );
+          }
 
-      if (!rpc.Api.isSimulationSuccess(result) || !result.result) {
-        throw new Error(
-          `Simulation returned no result for ${functionName}`,
-        );
-      }
+          if (!rpc.Api.isSimulationSuccess(result) || !result.result) {
+            throw new Error(
+              `Simulation returned no result for ${functionName}`,
+            );
+          }
 
-      return scValToNative(result.result.retval);
-    },
-    {
-      maxRetries: config.maxRetries,
-      baseDelayMs: config.retryBaseDelayMs,
-      label: `simulateContractCall [${functionName}]`,
-      shouldRetry: (err) => {
-        const msg = String(err);
-        return (
-          !msg.includes("Simulation error for") &&
-          !msg.includes("Simulation returned no result")
-        );
-      },
-    },
+          return scValToNative(result.result.retval);
+        },
+        {
+          maxRetries: config.maxRetries,
+          baseDelayMs: config.retryBaseDelayMs,
+          label: `simulateContractCall [${functionName}]`,
+          shouldRetry: (err) => {
+            const msg = String(err);
+            return (
+              !msg.includes("Simulation error for") &&
+              !msg.includes("Simulation returned no result")
+            );
+          },
+        },
+      ),
+    { attributes: { "contract.function": functionName, "contract.id": contractId } },
   );
 }
 

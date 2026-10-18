@@ -9,6 +9,7 @@
  */
 
 import type { LogLevel } from "./config.js";
+import { getActiveSpanContext } from "./tracing.js";
 
 const LEVELS: Record<LogLevel, number> = {
   debug: 0,
@@ -30,10 +31,12 @@ function emit(
 ): void {
   if (LEVELS[level] < LEVELS[currentLevel]) return;
 
+  const spanCtx = getActiveSpanContext();
   const entry = {
     ts: new Date().toISOString(),
     level,
     msg,
+    ...(spanCtx ? { traceId: spanCtx.traceId, spanId: spanCtx.spanId } : {}),
     ...fields,
   };
 

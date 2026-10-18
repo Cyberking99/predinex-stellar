@@ -30,6 +30,7 @@ import type { BotConfig } from "./config.js";
 import type { SettlementAttempt, SettlementCycleContext } from "./types.js";
 import { logger } from "./logger.js";
 import { withRetry } from "./retry.js";
+import { injectWorkerTraceHeaders, withWorkerSpan } from "./tracing.js";
 
 export interface WebhookPayload {
   event: "settlement_cycle";
@@ -144,47 +145,51 @@ export async function notify(
   settlements: SettlementAttempt[],
   cycleContext: SettlementCycleContext,
 ): Promise<void> {
-  if (!config.webhookUrl) return;
+  const webhookUrl = config.webhookUrl;
+  if (!webhookUrl) return;
 
-  const payload: WebhookPayload = {
-    event: "settlement_cycle",
-    ts: new Date().toISOString(),
-    network: config.network,
-    contractId: config.contractId,
-    dryRun: config.dryRun,
-    cycleNumber: cycleContext.cycleNumber,
-    instanceId: cycleContext.instanceId,
-    settlementTimestamp: cycleContext.settlementTimestamp,
-    settlements: settlements.map((s) => ({
-      poolId: s.poolId,
-      winningOutcome: s.winningOutcome,
-      txHash: s.txHash,
-      success: s.success,
-      error: s.error,
-    })),
-    summary: {
-      attempted: settlements.length,
-      succeeded: settlements.filter((s) => s.success).length,
-      failed: settlements.filter((s) => !s.success).length,
-    },
-  };
+  return withWorkerSpan(
+    "webhook.notify",
+    async () => {
+      const payload: WebhookPayload = {
+        event: "settlement_cycle",
+        ts: new Date().toISOString(),
+        network: config.network,
+        contractId: config.contractId,
+        dryRun: config.dryRun,
+        cycleNumber: cycleContext.cycleNumber,
+        instanceId: cycleContext.instanceId,
+        settlementTimestamp: cycleContext.settlementTimestamp,
+        settlements: settlements.map((s) => ({
+          poolId: s.poolId,
+          winningOutcome: s.winningOutcome,
+          txHash: s.txHash,
+          success: s.success,
+          error: s.error,
+        })),
+        summary: {
+          attempted: settlements.length,
+          succeeded: settlements.filter((s) => s.success).length,
+          failed: settlements.filter((s) => !s.success).length,
+        },
+      };
 
-  const body = JSON.stringify(payload);
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "User-Agent": "predinex-settlement-bot/1.0",
-  };
+      const body = JSON.stringify(payload);
+      const headers: Record<string, string> = injectWorkerTraceHeaders({
+        "Content-Type": "application/json",
+        "User-Agent": "predinex-settlement-bot/1.0",
+      });
 
-  if (config.webhookSecret) {
-    headers["X-Predinex-Signature"] = buildSignature(body, config.webhookSecret);
-  }
+      if (config.webhookSecret) {
+        headers["X-Predinex-Signature"] = buildSignature(body, config.webhookSecret);
+      }
 
   let lastError: string | undefined;
 
   try {
     await withRetry(
       async () => {
-        const response = await fetch(config.webhookUrl!, {
+        const response = await fetch(webhookUrl, {
           method: "POST",
           headers,
           body,
@@ -197,7 +202,7 @@ export async function notify(
 
         logger.debug("Webhook delivered", {
           status: response.status,
-          url: config.webhookUrl,
+          url: webhookUrl,
           settlements: payload.summary,
         });
       },
@@ -216,13 +221,16 @@ export async function notify(
     totalFailures++;
 
     logger.error("Webhook delivery failed permanently after retries", {
-      url: config.webhookUrl,
+      url: webhookUrl,
       attempts: WEBHOOK_MAX_RETRIES + 1,
       error: lastError,
       totalFailures,
       cycleNumber: payload.cycleNumber,
     });
 
-    persistDeadLetter(config.webhookUrl, payload, lastError);
+    persistDeadLetter(webhookUrl, payload, lastError);
   }
+    },
+    { attributes: { "webhook.cycle": cycleContext.cycleNumber } },
+  );
 }

@@ -6,7 +6,7 @@
  * recommendations for Stellar/Soroban smart contract operations.
  */
 
-import { Contract, SorobanRpc, xdr, Address } from 'stellar-sdk';
+import { Contract, rpc as SorobanRpc, xdr, Address } from 'stellar-sdk';
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../middleware/auth.js';
 import { rateLimitMiddleware } from '../middleware/rate-limit.js';

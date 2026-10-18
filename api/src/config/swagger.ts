@@ -912,7 +912,27 @@ export const openApiDoc = {
       post: { summary: 'Simulate position health', responses: { '200': { description: 'Simulation result' } } },
     },
     '/api/simulation/position-health': {
-      post: { summary: 'Simulate position health (alias)', responses: { '200': { description: 'Simulation result' } } },
+      post: {
+        summary: 'Simulate position health (deprecated alias)',
+        deprecated: true,
+        'x-api-version': 'v1',
+        'x-sunset': '2026-12-31T23:59:59Z',
+        responses: {
+          '200': {
+            description: 'Simulation result (includes RFC 8594 Deprecation and Sunset headers)',
+            headers: {
+              Deprecation: {
+                description: 'RFC 8594 deprecation timestamp (`@1767225600` or `true`)',
+                schema: { type: 'string' },
+              },
+              Sunset: {
+                description: 'RFC 8594 / RFC 7231 HTTP-date when the endpoint will be removed',
+                schema: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
     },
     '/api/simulation/health': {
       get: { summary: 'Simulation service health', responses: { '200': { description: 'OK' } } },
@@ -939,3 +959,10 @@ export const openApiDoc = {
     },
   },
 };
+
+// Stamp `x-api-version: 'v1'` on every documented path so endpoint version linting passes
+for (const pathItem of Object.values(openApiDoc.paths)) {
+  if (pathItem && typeof pathItem === 'object') {
+    (pathItem as Record<string, unknown>)['x-api-version'] ??= 'v1';
+  }
+}

@@ -12,8 +12,8 @@ import {
   Contract,
   Keypair,
   nativeToScVal,
+  rpc as SorobanRpc,
   scValToNative,
-  SorobanRpc,
   TransactionBuilder,
   xdr,
 } from 'stellar-sdk';
@@ -23,6 +23,7 @@ import {
   rateLimitMiddleware,
   strictRateLimitMiddleware,
 } from '../middleware/rate-limit.js';
+import { withSpan } from '../middleware/tracing.js';
 
 /**
  * Validates and checks RPC URL against network allowlist and blocks private IP / metadata addresses (SSRF protection).
@@ -200,83 +201,89 @@ export class EmergencyWithdrawalService {
     method: string,
     args: xdr.ScVal[]
   ): Promise<{ txHash: string; returnValue?: unknown }> {
-    if (!adminKeypair) {
-      throw new Error('Admin keypair is required');
-    }
-    if (!this.contractId) {
-      throw new Error('Contract ID is not configured');
-    }
-    const adminPublicKey = adminKeypair.publicKey();
-    // Validate address format early; throws on malformed keys.
-    new Address(adminPublicKey);
+    return withSpan(
+      `contract.call.${method}`,
+      async () => {
+        if (!adminKeypair) {
+          throw new Error('Admin keypair is required');
+        }
+        if (!this.contractId) {
+          throw new Error('Contract ID is not configured');
+        }
+        const adminPublicKey = adminKeypair.publicKey();
+        // Validate address format early; throws on malformed keys.
+        new Address(adminPublicKey);
 
-    // Verify authority: check if keypair public key matches configured expected admin
-    const expectedAdmin = process.env.EMERGENCY_ADMIN_PUBLIC_KEY || process.env.ADMIN_PUBLIC_KEY;
-    if (expectedAdmin && expectedAdmin !== adminPublicKey) {
-      throw new Error('Unauthorized: Keypair public key does not match configured contract admin');
-    }
+        // Verify authority: check if keypair public key matches configured expected admin
+        const expectedAdmin = process.env.EMERGENCY_ADMIN_PUBLIC_KEY || process.env.ADMIN_PUBLIC_KEY;
+        if (expectedAdmin && expectedAdmin !== adminPublicKey) {
+          throw new Error('Unauthorized: Keypair public key does not match configured contract admin');
+        }
 
-    const sourceAccount = await this.rpcServer.getAccount(adminPublicKey);
-    const contract = new Contract(this.contractId);
-    const tx = new TransactionBuilder(sourceAccount, {
-      fee: '1000',
-      networkPassphrase: this.networkPassphrase,
-    })
-      .addOperation(contract.call(method, ...args))
-      .setTimeout(60)
-      .build();
+        const sourceAccount = await this.rpcServer.getAccount(adminPublicKey);
+        const contract = new Contract(this.contractId);
+        const tx = new TransactionBuilder(sourceAccount, {
+          fee: '1000',
+          networkPassphrase: this.networkPassphrase,
+        })
+          .addOperation(contract.call(method, ...args))
+          .setTimeout(60)
+          .build();
 
-    const simulation: any = await this.rpcServer.simulateTransaction(tx);
-    const api: any = (SorobanRpc as any)?.Api;
-    const isSimError =
-      typeof api?.isSimulationError === 'function'
-        ? api.isSimulationError(simulation)
-        : Boolean(simulation?.error);
-    if (isSimError || simulation?.error) {
-      throw new Error(
-        `Simulation failed for ${method}: ${simulation?.error || 'unknown error'}`
-      );
-    }
-    const isSimSuccess =
-      typeof api?.isSimulationSuccess === 'function'
-        ? api.isSimulationSuccess(simulation)
-        : true;
-    if (!isSimSuccess) {
-      throw new Error(`Simulation returned unexpected result for ${method}`);
-    }
+        const simulation: any = await this.rpcServer.simulateTransaction(tx);
+        const api: any = (SorobanRpc as any)?.Api;
+        const isSimError =
+          typeof api?.isSimulationError === 'function'
+            ? api.isSimulationError(simulation)
+            : Boolean(simulation?.error);
+        if (isSimError || simulation?.error) {
+          throw new Error(
+            `Simulation failed for ${method}: ${simulation?.error || 'unknown error'}`
+          );
+        }
+        const isSimSuccess =
+          typeof api?.isSimulationSuccess === 'function'
+            ? api.isSimulationSuccess(simulation)
+            : true;
+        if (!isSimSuccess) {
+          throw new Error(`Simulation returned unexpected result for ${method}`);
+        }
 
-    let assembled: any = tx;
-    const assembler = (SorobanRpc as any)?.assembleTransaction;
-    if (typeof assembler === 'function') {
-      assembled = assembler(tx, simulation).build();
-    }
-    assembled.sign(adminKeypair);
+        let assembled: any = tx;
+        const assembler = (SorobanRpc as any)?.assembleTransaction;
+        if (typeof assembler === 'function') {
+          assembled = assembler(tx, simulation).build();
+        }
+        assembled.sign(adminKeypair);
 
-    const submission: any = await this.rpcServer.sendTransaction(assembled);
-    if (!submission || submission.status === 'ERROR') {
-      throw new Error(
-        `Transaction submission failed for ${method}: ${JSON.stringify(
-          submission?.errorResult ?? submission?.status ?? 'unknown'
-        )}`
-      );
-    }
-    const txHash = submission.hash as string;
-    if (!txHash) {
-      throw new Error(
-        `Transaction submission returned no hash for ${method}`
-      );
-    }
+        const submission: any = await this.rpcServer.sendTransaction(assembled);
+        if (!submission || submission.status === 'ERROR') {
+          throw new Error(
+            `Transaction submission failed for ${method}: ${JSON.stringify(
+              submission?.errorResult ?? submission?.status ?? 'unknown'
+            )}`
+          );
+        }
+        const txHash = submission.hash as string;
+        if (!txHash) {
+          throw new Error(
+            `Transaction submission returned no hash for ${method}`
+          );
+        }
 
-    let returnValue: unknown;
-    try {
-      const retval = simulation?.result?.retval;
-      if (retval) {
-        returnValue = scValToNative(retval);
-      }
-    } catch {
-      // Ignore decode errors; hash is still the source of truth.
-    }
-    return { txHash, returnValue };
+        let returnValue: unknown;
+        try {
+          const retval = simulation?.result?.retval;
+          if (retval) {
+            returnValue = scValToNative(retval);
+          }
+        } catch {
+          // Ignore decode errors; hash is still the source of truth.
+        }
+        return { txHash, returnValue };
+      },
+      { 'contract.method': method, 'contract.id': this.contractId }
+    );
   }
 
   /**

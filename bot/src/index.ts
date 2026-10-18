@@ -13,10 +13,12 @@ import { loadConfig } from "./config.js";
 import { setLogLevel, logger } from "./logger.js";
 import { Poller } from "./poller.js";
 import { HealthServer } from "./health.js";
+import { initWorkerTracing, shutdownWorkerTracing } from "./tracing.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
   setLogLevel(config.logLevel);
+  initWorkerTracing();
 
   logger.info("Predinex Settlement Bot initialising", {
     version: "1.0.0",
@@ -66,6 +68,7 @@ async function main(): Promise<void> {
     logger.info(`Received ${signal}, shutting down gracefully…`);
     poller.stop();
     void healthServer?.stop();
+    void shutdownWorkerTracing();
   };
 
   process.on("SIGINT", () => shutdown("SIGINT"));
@@ -88,6 +91,7 @@ async function main(): Promise<void> {
   });
 
   await poller.start();
+  await shutdownWorkerTracing();
 
   const { errorCount } = poller.getMetrics();
   const exitCode = hadErrors || errorCount > 0 ? 1 : 0;

@@ -49,6 +49,11 @@ import {
   parseMarketListQuery,
 } from '../services/market-query.js';
 import { AuthContext, sharedAuthValidator } from '../middleware/auth.js';
+import { withSpan } from '../middleware/tracing.js';
+import {
+  CreateMarketRequest,
+  validateCreateMarket,
+} from '../services/market-validation.js';
 
 export type { MarketStatus } from '../services/market-query.js';
 export type {
@@ -244,7 +249,9 @@ export class InMemoryMarketSource implements MarketSource {
   }
 
   public async count(query?: MarketListQuery): Promise<number> {
-    return this.markets.filter((market) => this.matchesQuery(market, query)).length;
+    return withSpan('db.markets.count', async () => {
+      return this.markets.filter((market) => this.matchesQuery(market, query)).length;
+    });
   }
 
   public async list(
@@ -252,43 +259,49 @@ export class InMemoryMarketSource implements MarketSource {
     limit: number,
     query: MarketListQuery = DEFAULT_QUERY
   ): Promise<MarketSummary[]> {
-    const filtered = this.markets.filter((market) => this.matchesQuery(market, query));
-    return this.sortMarkets(filtered, query)
-      .slice(offset, offset + limit)
-      .map((market) => this.clone(market));
+    return withSpan('db.markets.list', async () => {
+      const filtered = this.markets.filter((market) => this.matchesQuery(market, query));
+      return this.sortMarkets(filtered, query)
+        .slice(offset, offset + limit)
+        .map((market) => this.clone(market));
+    });
   }
 
   public async get(id: number): Promise<MarketSummary | null> {
-    const market = this.markets.find((candidate) => candidate.id === id);
-    return market ? this.clone(market) : null;
+    return withSpan('db.markets.get', async () => {
+      const market = this.markets.find((candidate) => candidate.id === id);
+      return market ? this.clone(market) : null;
+    });
   }
 
   public async cancel(id: number, actor: string, reason?: string): Promise<MarketSummary | null> {
-    const market = this.markets.find((candidate) => candidate.id === id);
-    if (!market) return null;
+    return withSpan('db.markets.cancel', async () => {
+      const market = this.markets.find((candidate) => candidate.id === id);
+      if (!market) return null;
 
-    // Idempotent: cancelling an already-cancelled market neither rewrites the
-    // record nor appends a duplicate audit entry.
-    if (market.status === 'cancelled') return this.clone(market);
+      // Idempotent: cancelling an already-cancelled market neither rewrites the
+      // record nor appends a duplicate audit entry.
+      if (market.status === 'cancelled') return this.clone(market);
 
-    const fromStatus = market.status;
-    market.status = 'cancelled';
-    market.cancelledAt = new Date().toISOString();
-    market.cancelledBy = actor;
-    if (reason !== undefined) market.cancelReason = reason;
+      const fromStatus = market.status;
+      market.status = 'cancelled';
+      market.cancelledAt = new Date().toISOString();
+      market.cancelledBy = actor;
+      if (reason !== undefined) market.cancelReason = reason;
 
-    this.audit.push({
-      id: this.nextAuditId++,
-      marketId: id,
-      action: 'cancelled',
-      actor,
-      ...(reason !== undefined ? { reason } : {}),
-      fromStatus,
-      toStatus: 'cancelled',
-      timestamp: market.cancelledAt,
+      this.audit.push({
+        id: this.nextAuditId++,
+        marketId: id,
+        action: 'cancelled',
+        actor,
+        ...(reason !== undefined ? { reason } : {}),
+        fromStatus,
+        toStatus: 'cancelled',
+        timestamp: market.cancelledAt,
+      });
+      this.invalidateCache();
+      return this.clone(market);
     });
-    this.invalidateCache();
-    return this.clone(market);
   }
 
   /** Status the market had before it was cancelled, from the audit trail. */
@@ -301,89 +314,97 @@ export class InMemoryMarketSource implements MarketSource {
   }
 
   public async restore(id: number, actor: string): Promise<MarketSummary | null> {
-    const market = this.markets.find((candidate) => candidate.id === id);
-    if (!market) return null;
-    if (market.status !== 'cancelled') return this.clone(market);
+    return withSpan('db.markets.restore', async () => {
+      const market = this.markets.find((candidate) => candidate.id === id);
+      if (!market) return null;
+      if (market.status !== 'cancelled') return this.clone(market);
 
-    const restoredStatus = this.statusBeforeCancel(id);
-    market.status = restoredStatus;
-    delete market.cancelledAt;
-    delete market.cancelledBy;
-    delete market.cancelReason;
+      const restoredStatus = this.statusBeforeCancel(id);
+      market.status = restoredStatus;
+      delete market.cancelledAt;
+      delete market.cancelledBy;
+      delete market.cancelReason;
 
-    this.audit.push({
-      id: this.nextAuditId++,
-      marketId: id,
-      action: 'restored',
-      actor,
-      fromStatus: 'cancelled',
-      toStatus: restoredStatus,
-      timestamp: new Date().toISOString(),
+      this.audit.push({
+        id: this.nextAuditId++,
+        marketId: id,
+        action: 'restored',
+        actor,
+        fromStatus: 'cancelled',
+        toStatus: restoredStatus,
+        timestamp: new Date().toISOString(),
+      });
+      this.invalidateCache();
+      return this.clone(market);
     });
-    this.invalidateCache();
-    return this.clone(market);
   }
 
   public async archiveResolvedOlderThan(windowMs: number): Promise<number> {
-    const cutoff = Date.now() - windowMs;
-    let archivedCount = 0;
+    return withSpan('db.markets.archiveResolvedOlderThan', async () => {
+      const cutoff = Date.now() - windowMs;
+      let archivedCount = 0;
 
-    for (const market of this.markets) {
-      if (market.status !== 'settled' && market.status !== 'voided') {
-        continue;
+      for (const market of this.markets) {
+        if (market.status !== 'settled' && market.status !== 'voided') {
+          continue;
+        }
+        if (!market.settledAt) {
+          continue;
+        }
+
+        const resolvedAt = Date.parse(market.settledAt);
+        if (Number.isNaN(resolvedAt) || resolvedAt >= cutoff) {
+          continue;
+        }
+
+        market.status = 'archived';
+        market.archivedAt = new Date().toISOString();
+        market.archivedBy = 'system';
+        archivedCount += 1;
       }
-      if (!market.settledAt) {
-        continue;
+
+      if (archivedCount > 0) {
+        this.invalidateCache();
       }
 
-      const resolvedAt = Date.parse(market.settledAt);
-      if (Number.isNaN(resolvedAt) || resolvedAt >= cutoff) {
-        continue;
-      }
-
-      market.status = 'archived';
-      market.archivedAt = new Date().toISOString();
-      market.archivedBy = 'system';
-      archivedCount += 1;
-    }
-
-    if (archivedCount > 0) {
-      this.invalidateCache();
-    }
-
-    return archivedCount;
+      return archivedCount;
+    });
   }
 
   public async getAuditLog(marketId?: number): Promise<MarketAuditEntry[]> {
-    return this.audit
-      .filter((entry) => marketId === undefined || entry.marketId === marketId)
-      .map((entry) => ({ ...entry }))
-      .reverse();
+    return withSpan('db.markets.getAuditLog', async () => {
+      return this.audit
+        .filter((entry) => marketId === undefined || entry.marketId === marketId)
+        .map((entry) => ({ ...entry }))
+        .reverse();
+    });
   }
 
   public async getMetrics(): Promise<MarketMetrics> {
-    const cacheKey = 'metrics';
-    const cached = this.getFromCache<MarketMetrics>(cacheKey);
-    if (cached) return cached;
+    return withSpan('db.markets.getMetrics', async () => {
+      const cacheKey = 'metrics';
+      const cached = this.getFromCache<MarketMetrics>(cacheKey);
+      if (cached) return cached;
 
-    const metrics: MarketMetrics = {
-      totalMarkets: this.markets.length,
-      openMarkets: this.markets.filter((m) => m.status === 'open').length,
-      settledMarkets: this.markets.filter((m) => m.status === 'settled').length,
-      voidedMarkets: this.markets.filter((m) => m.status === 'voided').length,
-      cancelledMarkets: this.markets.filter((m) => m.status === 'cancelled').length,
-      archivedMarkets: this.markets.filter((m) => m.status === 'archived').length,
-      totalVolume: this.markets
-        .reduce((sum, m) => sum + BigInt(m.totalVolume || '0'), BigInt(0))
-        .toString(),
-      topMarketsByVolume: [...this.markets]
-        .sort((a, b) => this.compareVolume(b.totalVolume, a.totalVolume))
-        .slice(0, 10),
-      topMarketsByParticipants: [...this.markets].slice(0, 10),
-    };
+      const metrics: MarketMetrics = {
+        totalMarkets: this.markets.length,
+        openMarkets: this.markets.filter((m) => m.status === 'open').length,
+        settledMarkets: this.markets.filter((m) => m.status === 'settled').length,
+        voidedMarkets: this.markets.filter((m) => m.status === 'voided').length,
+        cancelledMarkets: this.markets.filter((m) => m.status === 'cancelled').length,
+        archivedMarkets: this.markets.filter((m) => m.status === 'archived').length,
+        totalVolume: this.markets
+          .reduce((sum, m) => sum + BigInt(m.totalVolume || '0'), BigInt(0))
+          .toString(),
+        topMarketsByVolume: [...this.markets]
+          .sort((a, b) => this.compareVolume(b.totalVolume, a.totalVolume))
+          .slice(0, 10),
+        topMarketsByParticipants: [...this.markets].slice(0, 10),
+      };
 
-    this.setCache(cacheKey, metrics);
-    return metrics;
+      this.setCache(cacheKey, metrics);
+      return metrics;
+    });
   }
 }
 
@@ -677,7 +698,90 @@ export function createMarketsRouter(
     }
   });
 
+  router.post('/', strictRateLimitMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+    const validation = validateCreateMarket(req.body);
+    if (!validation.ok) {
+      sendError(res, 400, 'VALIDATION_ERROR', 'Invalid market creation request', validation.errors);
+      return;
+    }
+
+    if (!creator) {
+      sendError(res, 501, 'NOT_IMPLEMENTED', 'On-chain market creation is not configured');
+      return;
+    }
+
+    try {
+      const created = await withSpan('contract.create_market', () => creator(validation.value));
+      res.status(201).json({
+        success: true,
+        data: created,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   return router;
+}
+
+function sendError(
+  res: Response,
+  status: number,
+  code: string,
+  message: string,
+  details?: unknown
+): void {
+  res.status(status).json({
+    success: false,
+    error: {
+      code,
+      message,
+      ...(details !== undefined ? { details } : {}),
+    },
+    timestamp: new Date().toISOString(),
+  });
+}
+
+function authenticate(req: Request): AuthContext {
+  return sharedAuthValidator.authenticate(req.headers as Record<string, string | undefined>);
+}
+
+function auditActor(auth: AuthContext): string {
+  return auth.subjectAddress ?? 'admin';
+}
+
+function parseMarketId(raw: string | undefined): { ok: true; id: number } | { ok: false } {
+  if (typeof raw !== 'string' || !/^[1-9]\d*$/.test(raw)) {
+    return { ok: false };
+  }
+  const id = Number(raw);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return { ok: false };
+  }
+  return { ok: true, id };
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === 'string' && /^[1-9]\d*$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+const DEFAULT_ARCHIVE_WINDOW_DAYS = 30;
+
+function loadArchiveWindowDays(env: NodeJS.ProcessEnv = process.env): number {
+  const parsed = parsePositiveInteger(env.MARKET_ARCHIVE_WINDOW_DAYS);
+  return parsed ?? DEFAULT_ARCHIVE_WINDOW_DAYS;
+}
+
+function archiveWindowMs(days: number): number {
+  return days * 24 * 60 * 60 * 1000;
 }
 
 export const marketsRouter = createMarketsRouter();

@@ -40,6 +40,7 @@ import { simulationRouter } from './routes/simulation.js';
 import { rateLimitMiddleware, setDefaultTokenVerifier } from './middleware/rate-limit.js';
 import { sharedAuthValidator } from './middleware/auth.js';
 import { tracingMiddleware } from './middleware/tracing.js';
+import { versioningMiddleware } from './middleware/versioning.js';
 import { openApiDoc } from './config/swagger.js';
 
 export const API_VERSION = '1.0.0';
@@ -101,6 +102,10 @@ export function createApp(): Express {
   // Opt-in OpenTelemetry request spans (see #1426); a no-op unless tracing is
   // enabled via OTEL_TRACING_ENABLED.
   app.use(tracingMiddleware);
+
+  // API versioning & deprecation policy (URI `/api/v1/*` + header negotiation
+  // and RFC 8594 `Deprecation` / `Sunset` headers on deprecated endpoints).
+  app.use(versioningMiddleware);
 
   // Global rate limiting; routers add auth + stricter per-route limits.
   // Registered API keys get their own bucket; everyone else is limited per IP

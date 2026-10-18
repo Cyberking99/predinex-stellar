@@ -30,6 +30,7 @@ import type { BotConfig } from "./config.js";
 import type { SettlementAttempt } from "./types.js";
 import { logger } from "./logger.js";
 import { withRetry } from "./retry.js";
+import { withWorkerSpan } from "./tracing.js";
 
 /** Base transaction fee in stroops */
 const BASE_FEE = "1000";
@@ -310,23 +311,26 @@ export class Executor {
   private async settleBatch(
     batch: SettleCandidate[],
   ): Promise<SettlementAttempt[]> {
-    const startMs = Date.now();
+    return withWorkerSpan(
+      "contract.settle_pools",
+      async () => {
+        const startMs = Date.now();
 
-    if (this.config.dryRun) {
-      // Dry runs must apply exactly the same input validation as live submits.
-      validateSettlementOutcomes(batch);
-      logger.info("[DRY-RUN] Would settle pools (no transaction submitted)", {
-        poolIds: batch.map((c) => c.poolId),
-      });
-      return batch.map((c) => ({
-        poolId: c.poolId,
-        winningOutcome: c.winningOutcome,
-        dryRun: true,
-        success: true,
-        attemptCount: 0,
-        durationMs: Date.now() - startMs,
-      }));
-    }
+        if (this.config.dryRun) {
+          // Dry runs must apply exactly the same input validation as live submits.
+          validateSettlementOutcomes(batch);
+          logger.info("[DRY-RUN] Would settle pools (no transaction submitted)", {
+            poolIds: batch.map((c) => c.poolId),
+          });
+          return batch.map((c) => ({
+            poolId: c.poolId,
+            winningOutcome: c.winningOutcome,
+            dryRun: true,
+            success: true,
+            attemptCount: 0,
+            durationMs: Date.now() - startMs,
+          }));
+        }
 
     let txHash: string | undefined;
     let attemptCount = 0;
@@ -410,5 +414,8 @@ export class Executor {
         durationMs: Date.now() - startMs,
       }));
     }
+      },
+      { attributes: { "batch.size": batch.length } },
+    );
   }
 }

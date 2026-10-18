@@ -7,7 +7,19 @@
 > **Source:** `contracts/predinex/src/lib.rs`
 
 Complete reference for every public entrypoint in `PredinexContract`.  
-Sections: [Pool Management](#pool-management) · [Betting](#betting) · [Settlement](#settlement) · [Claims](#claims) · [Pool Templates](#pool-templates) · [Admin](#admin) · [Queries](#queries)
+Sections: [HTTP API Versioning Policy](#http-api-versioning-policy) · [Pool Management](#pool-management) · [Betting](#betting) · [Settlement](#settlement) · [Claims](#claims) · [Pool Templates](#pool-templates) · [Admin](#admin) · [Queries](#queries)
+
+---
+
+## HTTP API Versioning Policy
+
+The Predinex HTTP API (`api/`) enforces an explicit versioning contract:
+
+- **Version Resolution:** Clients may specify the API version via URI prefix (`/api/v1/<resource>`) or request header (`X-API-Version: v1` / `Accept-Version: v1`). Unprefixed `/api/<resource>` routes default to the current stable version (`v1`).
+- **Response Headers:** Every API response includes `X-API-Version: v1`. Unsupported versions return `400 UNSUPPORTED_API_VERSION`.
+- **Support Window & Deprecation:** Breaking changes require a new major version (`v2`, etc.) and a minimum **90-day support window** before an older version or endpoint is removed.
+- **Deprecation & Sunset Headers:** Deprecated endpoints (such as `POST /api/simulation/position-health`) emit standard RFC 8594 `Deprecation` (`@<epoch-timestamp>` or `true`), RFC 8594 / RFC 7231 `Sunset` (HTTP-date), and `Link: <successor>; rel="successor-version"` headers.
+- **OpenAPI Linting:** Every endpoint in `api/src/config/swagger.ts` must declare `x-api-version` (validated by `findEndpointsMissingVersion` in `api/src/middleware/versioning.ts`).
 
 ---
 

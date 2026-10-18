@@ -6146,6 +6146,9 @@ impl PredinexContract {
         if !Self::is_initialized(&env) {
             panic_with_error!(&env, ContractError::NotInitialized);
         }
+        if Self::is_paused(env.clone()) {
+            panic_with_error!(&env, ContractError::ContractPaused);
+        }
         let mut results = Vec::new(&env);
         let total = pools.len();
         let truncated = total > 20;
@@ -9089,6 +9092,29 @@ impl PredinexContract {
         Ok(())
     }
 
+    fn require_admin_or_treasury_recipient(
+        env: &Env,
+        caller: &Address,
+    ) -> Result<(), ContractError> {
+        let treasury = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::TreasuryRecipient);
+        let admin = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Admin);
+        if treasury.is_none() && admin.is_none() {
+            return Err(ContractError::NotInitialized);
+        }
+        let is_treasury = treasury.map(|addr| &addr == caller).unwrap_or(false);
+        let is_admin = admin.map(|addr| &addr == caller).unwrap_or(false);
+        if !is_treasury && !is_admin {
+            return Err(ContractError::Unauthorized);
+        }
+        Ok(())
+    }
+
     fn record_treasury_withdrawal_rate_limit(env: &Env, amount: i128) -> Result<(), ContractError> {
         let max_per_window: i128 = env
             .storage()
@@ -9131,16 +9157,16 @@ impl PredinexContract {
         Ok(())
     }
 
-    /// #350 — Pause or unpause the contract. Only the treasury recipient may call this.
-    /// While paused, sensitive operations (place_bet, settle_pool, claim_winnings,
-    /// claim_refund, void_pool) are blocked. Treasury withdrawals and admin functions
+    /// #350 — Pause or unpause the contract. Only an authorized admin or treasury recipient may call this.
+    /// While paused, sensitive operations (place_bet, settle_pool, settle_pools, settle_mirror_from_source,
+    /// claim_winnings, claim_refund, void_pool) are blocked. Treasury withdrawals and admin functions
     /// remain operational.
     ///
     /// Emits `contract_paused` or `contract_unpaused` with `event_version()` in the
     /// topic tuple so indexers can filter by version like every other event.
     pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), ContractError> {
         caller.require_auth();
-        Self::require_treasury_recipient(&env, &caller)?;
+        Self::require_admin_or_treasury_recipient(&env, &caller)?;
         env.storage().persistent().set(&DataKey::Paused, &paused);
 
         if paused {
@@ -9152,23 +9178,25 @@ impl PredinexContract {
     }
 
     /// #456 — Pause the contract. Convenience wrapper around [`set_paused`](Self::set_paused).
-    /// Only the treasury recipient (admin) may call this.
-    /// Emits a `contract_paused` event.
+    /// Only an authorized admin or treasury recipient may call this.
+    /// Emits `contract_paused` and `PoolPaused` events.
     pub fn pause_contract(env: Env, caller: Address) -> Result<(), ContractError> {
         caller.require_auth();
-        Self::require_treasury_recipient(&env, &caller)?;
+        Self::require_admin_or_treasury_recipient(&env, &caller)?;
         env.storage().persistent().set(&DataKey::Paused, &true);
+        emit_contract_paused(&env, caller.clone());
         emit_pool_paused(&env, caller);
         Ok(())
     }
 
     /// #456 — Unpause the contract. Convenience wrapper around [`set_paused`](Self::set_paused).
-    /// Only the treasury recipient (admin) may call this.
-    /// Emits a `contract_unpaused` event.
+    /// Only an authorized admin or treasury recipient may call this.
+    /// Emits `contract_unpaused` and `PoolUnpaused` events.
     pub fn unpause_contract(env: Env, caller: Address) -> Result<(), ContractError> {
         caller.require_auth();
-        Self::require_treasury_recipient(&env, &caller)?;
+        Self::require_admin_or_treasury_recipient(&env, &caller)?;
         env.storage().persistent().set(&DataKey::Paused, &false);
+        emit_contract_unpaused(&env, caller.clone());
         emit_pool_unpaused(&env, caller);
         Ok(())
     }
@@ -11286,7 +11314,8 @@ impl PredinexContract {
         winning_outcome: u32,
     ) -> Result<(), ContractError> {
         caller.require_auth();
-        Self::require_treasury_recipient(&env, &caller)?;
+        Self::require_not_paused(&env)?;
+        Self::require_admin_or_treasury_recipient(&env, &caller)?;
         let mut mirror: PoolMirrorConfig = env
             .storage()
             .persistent()

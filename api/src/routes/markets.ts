@@ -7,6 +7,14 @@
  * market in a single response. Results are ordered by ascending market id so
  * pages are stable while new markets are appended.
  *
+ * POST /api/markets
+ *
+ * Validates a market creation payload (Issue #1434) with the shared rules in
+ * `services/market-validation.ts` and hands valid payloads, unchanged, to the
+ * configured `MarketCreator`. Invalid payloads get a structured 400 with
+ * field-level `details`. Until an on-chain creator is wired in, valid
+ * payloads receive 501, mirroring the referral route.
+ *
  * Response envelope:
  *   {
  *     success: true,
@@ -133,9 +141,15 @@ export class InMemoryMarketSource implements MarketSource {
   }
 }
 
+/** Submits a validated market creation request and returns the created market. */
+export type MarketCreator = (req: CreateMarketRequest) => Promise<MarketSummary>;
+
 export const defaultMarketSource = new InMemoryMarketSource();
 
-export function createMarketsRouter(source: MarketSource = defaultMarketSource): Router {
+export function createMarketsRouter(
+  source: MarketSource = defaultMarketSource,
+  creator?: MarketCreator
+): Router {
   const router = Router();
   router.use(rateLimitMiddleware);
 

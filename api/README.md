@@ -81,11 +81,24 @@ spans are emitted automatically.
 ## API Endpoints
 
 ### GET /api/markets
-List markets one page at a time, ordered by ascending market id.
+List markets one page at a time, ordered by ascending market id by default.
 
-Query parameters: `limit` (1-100, default 20; larger values are capped at 100)
-and `offset` (default 0). Invalid values return `400 VALIDATION_ERROR`. An
-offset past the end returns an empty `data` array.
+Query parameters:
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `limit` | `20` | Page size, 1-100; larger values are capped at 100 |
+| `offset` | `0` | Zero-based index of the first market to return |
+| `status` | *(all non-cancelled)* | One or more statuses: comma-separated (`status=open,settled`) and/or repeated (`status=open&status=settled`). Valid values: `open`, `settled`, `voided`, `cancelled` |
+| `sort` | `id` | Sort field: `id`, `expiry`, `volume`, or `title` |
+| `order` | `asc` | Sort direction: `asc` or `desc` |
+
+Invalid values return `400 VALIDATION_ERROR` with every offending parameter
+reported at once. An offset past the end returns an empty `data` array.
+Cancelled (soft-deleted) markets are excluded unless the `status` filter
+explicitly includes `cancelled`, which requires admin credentials
+(`x-api-key`); other callers get `403 FORBIDDEN`. Pagination totals always
+reflect the filtered set.
 
 **Response:**
 ```json

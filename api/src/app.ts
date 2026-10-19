@@ -88,7 +88,7 @@ contractService.setBalanceProvider(getStellarBalance);
  * Creates and configures the Express application instance.
  * Installs CORS ahead of routes with explicit configuration.
  */
-export function createApp(): Express {
+export function createApp(tradeHistorySource?: TradeHistorySource): Express {
   const app = express();
 
   app.disable('x-powered-by');

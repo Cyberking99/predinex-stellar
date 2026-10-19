@@ -119,6 +119,49 @@ export function createApp(tradeHistorySource?: TradeHistorySource): Express {
   setDefaultTokenVerifier((apiKey) => sharedAuthValidator.isRegisteredKey(apiKey));
   app.use(rateLimitMiddleware);
 
+  // 3. Health / readiness probes (#1429).
+  //
+  // /healthz  — liveness probe. Always 200 when the process is up. Used by
+  //             Kubernetes livenessProbe / Docker HEALTHCHECK to decide when
+  //             to restart a container.
+  //
+  // /readyz   — readiness probe. 200 only when all required configuration is
+  //             present and the service can handle traffic. Returns 503 with a
+  //             JSON body listing failing checks when the service is not ready.
+  //             Used by Kubernetes readinessProbe to gate traffic routing.
+  //
+  // /health and /api/health are kept as backwards-compatible aliases.
+  app.get('/healthz', (_req: Request, res: Response) => {
+    res.status(200).json({ status: 'ok' });
+  });
+
+  app.get('/readyz', (_req: Request, res: Response) => {
+    const checks: Record<string, { ok: boolean; reason?: string }> = {};
+
+    // Check 1 — required environment variables are set.
+    const missingEnv: string[] = [];
+    const required = ['NODE_ENV'];
+    for (const key of required) {
+      if (!process.env[key]) missingEnv.push(key);
+    }
+    checks.config = missingEnv.length === 0
+      ? { ok: true }
+      : { ok: false, reason: `missing env vars: ${missingEnv.join(', ')}` };
+
+    // Check 2 — API version constant is reachable (module-level sanity).
+    checks.api = { ok: Boolean(API_VERSION) };
+
+    const allOk = Object.values(checks).every((c) => c.ok);
+    const statusCode = allOk ? 200 : 503;
+    res.status(statusCode).json({
+      status: allOk ? 'ok' : 'unavailable',
+      checks,
+      ...(allOk ? {} : { timestamp: new Date().toISOString() }),
+    });
+  });
+
+  app.get('/health', (_req: Request, res: Response) => {
+    res.status(200).json(healthPayload());
   // 3. Health checks.
   app.get('/health', async (_req: Request, res: Response) => {
     const payload = await healthPayload();

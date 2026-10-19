@@ -861,8 +861,8 @@ export const openApiDoc = {
       get: {
         summary: 'Cancellation/restoration audit history (admin only)',
         description:
-          'Newest-first audit entries for every market cancellation and restoration. Optionally filter to one ' +
-          'market with `marketId`.',
+          'Newest-first audit entries for every market cancellation and restoration. Supports cursor pagination + ' +
+          'filters for market, actor, action, and date range. Example: GET /api/markets/admin/audit?actor=admin&action=cancelled&from=2025-01-01T00:00:00.000Z&limit=50',
         security: [{ apiKey: [] }],
         parameters: [
           {
@@ -873,10 +873,46 @@ export const openApiDoc = {
             schema: { type: 'integer', minimum: 0 },
           },
           {
+            name: 'actor',
+            in: 'query',
+            required: false,
+            description: 'Case-insensitive substring filter on the actor address or admin name',
+            schema: { type: 'string', example: 'admin' },
+          },
+          {
+            name: 'action',
+            in: 'query',
+            required: false,
+            description: 'Filter by audit action type',
+            schema: { type: 'string', enum: ['cancelled', 'restored'], example: 'cancelled' },
+          },
+          {
+            name: 'from',
+            in: 'query',
+            required: false,
+            description: 'Inclusive lower bound for the event timestamp (ISO-8601)',
+            schema: { type: 'string', format: 'date-time', example: '2025-01-01T00:00:00.000Z' },
+          },
+          {
+            name: 'to',
+            in: 'query',
+            required: false,
+            description: 'Inclusive upper bound for the event timestamp (ISO-8601)',
+            schema: { type: 'string', format: 'date-time', example: '2025-12-31T23:59:59.999Z' },
+          },
+          {
+            name: 'cursor',
+            in: 'query',
+            required: false,
+            description: 'Opaque cursor for the next page; use the previous response\'s nextCursor value',
+            schema: { type: 'string', example: '42' },
+          },
+          {
             name: 'limit',
             in: 'query',
             required: false,
-            schema: { type: 'integer', minimum: 1, default: 20 },
+            description: 'Maximum records to return; capped server-side at 100',
+            schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
           },
           {
             name: 'offset',
@@ -898,7 +934,23 @@ export const openApiDoc = {
                       type: 'array',
                       items: { $ref: '#/components/schemas/MarketAuditEntry' },
                     },
-                    pagination: { $ref: '#/components/schemas/MarketPagination' },
+                    pagination: {
+                      type: 'object',
+                      properties: {
+                        total: { type: 'integer', example: 42 },
+                        limit: { type: 'integer', example: 20 },
+                        offset: { type: 'integer', example: 0 },
+                        count: { type: 'integer', example: 20 },
+                        hasMore: { type: 'boolean', example: true },
+                        nextOffset: { type: 'integer', nullable: true, example: 20 },
+                        prevOffset: { type: 'integer', nullable: true, example: null },
+                        page: { type: 'integer', example: 1 },
+                        pageSize: { type: 'integer', example: 20 },
+                        nextCursor: { type: 'string', nullable: true, example: '42' },
+                        prevCursor: { type: 'string', nullable: true, example: null },
+                        cursor: { type: 'string', nullable: true, example: '12' },
+                      },
+                    },
                     timestamp: { $ref: '#/components/schemas/IsoTimestamp' },
                   },
                 },

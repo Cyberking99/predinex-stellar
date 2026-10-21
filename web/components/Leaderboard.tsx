@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useState } from 'react';
+import { memo, useState, useRef, type KeyboardEvent } from 'react';
 import { Trophy, RefreshCw, AlertCircle, Users, Layers } from 'lucide-react';
 import { useLeaderboard, type LeaderboardTab } from '../app/lib/hooks/useLeaderboard';
 import { formatDisplayAddress } from '../app/lib/address-display';
@@ -48,6 +48,27 @@ const Leaderboard = memo(function Leaderboard({ currentUserAddress }: Leaderboar
 
   const userRank = activeTab === 'bettors' ? userBettorRank : userCreatorRank;
 
+  // #1540 — WAI-ARIA tabs: roving tabindex + arrow-key movement, so keyboard
+  // users switch panels without tabbing through every row of the active one.
+  const tabRefs = {
+    bettors: useRef<HTMLButtonElement>(null),
+    creators: useRef<HTMLButtonElement>(null),
+  };
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, current: LeaderboardTab) => {
+    const order: LeaderboardTab[] = ['bettors', 'creators'];
+    const index = order.indexOf(current);
+    let next: LeaderboardTab | null = null;
+    if (event.key === 'ArrowRight') next = order[(index + 1) % order.length];
+    else if (event.key === 'ArrowLeft') next = order[(index - 1 + order.length) % order.length];
+    else if (event.key === 'Home') next = order[0];
+    else if (event.key === 'End') next = order[order.length - 1];
+    if (next) {
+      event.preventDefault();
+      setActiveTab(next);
+      tabRefs[next].current?.focus();
+    }
+  };
+
   return (
     <div className="glass-panel rounded-xl p-6">
       {/* Header */}
@@ -73,6 +94,9 @@ const Leaderboard = memo(function Leaderboard({ currentUserAddress }: Leaderboar
           aria-selected={activeTab === 'bettors'}
           aria-controls="tab-panel-bettors"
           id="tab-bettors"
+          ref={tabRefs.bettors}
+          tabIndex={activeTab === 'bettors' ? 0 : -1}
+          onKeyDown={(event) => handleTabKeyDown(event, 'bettors')}
           onClick={() => setActiveTab('bettors')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors
             ${activeTab === 'bettors' ? 'bg-primary text-primary-foreground' : 'bg-muted/30 hover:bg-muted/50 text-muted-foreground'}`}
@@ -85,6 +109,9 @@ const Leaderboard = memo(function Leaderboard({ currentUserAddress }: Leaderboar
           aria-selected={activeTab === 'creators'}
           aria-controls="tab-panel-creators"
           id="tab-creators"
+          ref={tabRefs.creators}
+          tabIndex={activeTab === 'creators' ? 0 : -1}
+          onKeyDown={(event) => handleTabKeyDown(event, 'creators')}
           onClick={() => setActiveTab('creators')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors
             ${activeTab === 'creators' ? 'bg-primary text-primary-foreground' : 'bg-muted/30 hover:bg-muted/50 text-muted-foreground'}`}

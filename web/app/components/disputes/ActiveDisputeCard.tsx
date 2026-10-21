@@ -1,3 +1,4 @@
+import { TOKEN_SYMBOL } from '@/app/lib/formatting';
 import type { Dispute, DisputeVote } from '@/app/lib/disputes/types';
 import {
   formatDisputeAddress,
@@ -39,7 +40,7 @@ export function ActiveDisputeCard({
         </div>
 
         <div className="text-right">
-          <div className="text-sm font-semibold">{formatMicroStx(dispute.disputeBond)} STX bond</div>
+          <div className="text-sm font-semibold">{formatMicroStx(dispute.disputeBond)} {TOKEN_SYMBOL} bond</div>
           <div className="text-xs text-muted-foreground">
             {formatVotingTimeRemaining(dispute.votingDeadline, now)}
           </div>

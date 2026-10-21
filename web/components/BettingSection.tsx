@@ -91,6 +91,18 @@ export default function BettingSection({
 
   const isAmountInvalid = amountError !== null;
   const showAmountError = amountTouched && isAmountInvalid;
+  // #1538 — the bet buttons are disabled while the amount is empty, but the
+  // error message only appeared after blur, so an untouched field left the user
+  // staring at two permanently disabled buttons with no explanation. Show a
+  // quiet hint until they interact, then hand over to the error message.
+  const showAmountHint = !amountTouched && betAmount.trim() === '';
+  const describedBy = [
+    'bet-limits',
+    showAmountError ? 'bet-amount-error' : null,
+    showAmountHint ? 'bet-amount-hint' : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   const placeBet = async (outcome: number) => {
     if (!isConnected) {
@@ -316,7 +328,8 @@ export default function BettingSection({
             isMismatch
           }
           aria-label={t('betting.amountAriaLabel')}
-          aria-describedby="bet-limits"
+          aria-describedby={describedBy}
+          aria-invalid={showAmountError}
           className="w-full px-4 py-3 rounded-lg bg-background border border-input outline-none focus:border-primary focus:ring-2 focus:ring-primary/50 text-base"
         />
         {/* #715 — Quick-select percentage buttons for mobile */}
@@ -352,8 +365,13 @@ export default function BettingSection({
             ? `, ${t('betting.maxLabel').replace('{max}', String(maxBetXlm))}`
             : `, ${t('betting.noMaximum')}`}
         </p>
+        {showAmountHint && (
+          <p id="bet-amount-hint" className="text-sm text-muted-foreground mt-1">
+            {t('betting.amountHint')}
+          </p>
+        )}
         {showAmountError && amountError && (
-          <p role="alert" className="text-sm text-red-500 mt-1">
+          <p id="bet-amount-error" role="alert" className="text-sm text-red-500 mt-1">
             {amountError}
           </p>
         )}

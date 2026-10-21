@@ -136,6 +136,7 @@ const translations: Record<AppLanguage, TranslationMap> = {
     'betting.actionName': 'Place Bet',
     'betting.successMessage': 'Bet placed successfully!',
     'betting.amountRequired': 'Amount is required',
+    'betting.amountHint': 'Enter an amount to place a bet',
     // Claim winnings
     'claim.button': 'Claim Winnings',
     'claim.processing': 'Processing...',
@@ -281,6 +282,7 @@ const translations: Record<AppLanguage, TranslationMap> = {
     'betting.actionName': 'Realizar apuesta',
     'betting.successMessage': '¡Apuesta realizada con éxito!',
     'betting.amountRequired': 'El importe es obligatorio',
+    'betting.amountHint': 'Introduce un importe para apostar',
     // Claim winnings
     'claim.button': 'Reclamar ganancias',
     'claim.processing': 'Procesando...',
@@ -426,6 +428,7 @@ const translations: Record<AppLanguage, TranslationMap> = {
     'betting.actionName': 'Placer un pari',
     'betting.successMessage': 'Pari placé avec succès\u00a0!',
     'betting.amountRequired': 'Le montant est requis',
+    'betting.amountHint': 'Saisissez un montant pour parier',
     // Claim winnings
     'claim.button': 'Réclamer les gains',
     'claim.processing': 'Traitement en cours...',

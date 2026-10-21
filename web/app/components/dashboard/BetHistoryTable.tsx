@@ -145,7 +145,10 @@ export default function BetHistoryTable({
         
         <div className="flex items-center gap-2 w-full sm:w-auto">
           <button
+            type="button"
             onClick={() => setShowFilters(!showFilters)}
+            aria-expanded={showFilters}
+            aria-controls="bet-history-filters"
             className="flex items-center gap-2 px-3 py-2 border border-muted/50 rounded-lg hover:bg-muted/50 transition-colors"
           >
             <Filter className="w-4 h-4" />
@@ -153,6 +156,7 @@ export default function BetHistoryTable({
           </button>
 
           <select
+            aria-label="Sort betting history"
             value={`${filters.sortBy}-${filters.sortOrder}`}
             onChange={(e) => {
               const [sortBy, sortOrder] = e.target.value.split('-') as [typeof filters.sortBy, typeof filters.sortOrder];
@@ -172,11 +176,12 @@ export default function BetHistoryTable({
 
       {/* Filters Panel */}
       {showFilters && (
-        <div className="glass p-4 rounded-xl">
+        <div className="glass p-4 rounded-xl" id="bet-history-filters">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-2">Outcome</label>
+              <label htmlFor="bet-filter-outcome" className="block text-sm font-medium mb-2">Outcome</label>
               <select
+                id="bet-filter-outcome"
                 value={filters.historyOutcome}
                 onChange={(e) => onFiltersChange({ historyOutcome: e.target.value as DashboardFilters['historyOutcome'] })}
                 className="w-full px-3 py-2 border border-muted/50 rounded-lg bg-background"
@@ -189,8 +194,9 @@ export default function BetHistoryTable({
             </div>
             
             <div>
-              <label className="block text-sm font-medium mb-2">Market Status</label>
+              <label htmlFor="bet-filter-status" className="block text-sm font-medium mb-2">Market Status</label>
               <select
+                id="bet-filter-status"
                 value={filters.historyMarketStatus}
                 onChange={(e) => onFiltersChange({ historyMarketStatus: e.target.value as DashboardFilters['historyMarketStatus'] })}
                 className="w-full px-3 py-2 border border-muted/50 rounded-lg bg-background"
@@ -207,6 +213,7 @@ export default function BetHistoryTable({
               <div className="flex gap-2">
                 <input
                   type="date"
+                  aria-label="Start date"
                   value={filters.historyDateRange.start?.toISOString().split('T')[0] || ''}
                   onChange={(e) => onFiltersChange({
                     historyDateRange: {
@@ -218,6 +225,7 @@ export default function BetHistoryTable({
                 />
                 <input
                   type="date"
+                  aria-label="End date"
                   value={filters.historyDateRange.end?.toISOString().split('T')[0] || ''}
                   onChange={(e) => onFiltersChange({
                     historyDateRange: {
@@ -271,14 +279,15 @@ export default function BetHistoryTable({
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
+              <caption className="sr-only">Betting history, one row per bet</caption>
               <thead className="bg-muted/30">
                 <tr>
-                  <th className="text-left p-4 font-medium">Market</th>
-                  <th className="text-left p-4 font-medium">Outcome</th>
-                  <th className="text-left p-4 font-medium">Amount</th>
-                  <th className="text-left p-4 font-medium">Status</th>
-                  <th className="text-left p-4 font-medium">Profit/Loss</th>
-                  <th className="text-left p-4 font-medium">Date</th>
+                  <th scope="col" className="text-left p-4 font-medium">Market</th>
+                  <th scope="col" className="text-left p-4 font-medium">Outcome</th>
+                  <th scope="col" className="text-left p-4 font-medium">Amount</th>
+                  <th scope="col" className="text-left p-4 font-medium">Status</th>
+                  <th scope="col" className="text-left p-4 font-medium">Profit/Loss</th>
+                  <th scope="col" className="text-left p-4 font-medium">Date</th>
                 </tr>
               </thead>
               <tbody>

@@ -65,7 +65,7 @@ export interface PaginationState {
 }
 
 export type MarketStatus = 'active' | 'settled' | 'expired' | 'frozen' | 'disputed';
-export type MarketStatusFilter = 'all' | 'open' | 'settled' | 'disputed' | 'frozen';
+export type MarketStatusFilter = 'all' | 'open' | 'settled' | 'disputed' | 'frozen' | 'expired';
 export type SortOption = 'newest' | 'ending-soon' | 'volume' | 'participants';
 export type TimeRangeFilter = 'all' | 'ending-24h' | 'ending-7d' | 'created-7d' | 'created-30d';
 export type StatusFilter = MarketStatusFilter;

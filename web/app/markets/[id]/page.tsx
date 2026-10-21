@@ -8,7 +8,7 @@ import BettingSection from '@/components/BettingSection';
 import ClaimWinningsButton from "../../../components/ClaimWinningsButton";
 import SettledPoolSummary from "../../components/SettledPoolSummary";
 import { useWallet } from '@/components/WalletAdapterProvider';
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useUserActivity } from "../../hooks/useUserActivity";
 import { predinexReadApi } from "../../lib/adapters/predinex-read-api";
 import type { Pool } from "../../lib/adapters/types";
@@ -23,6 +23,7 @@ import ShareButton from "../../../components/ShareButton";
 import { TruncatedAddress } from "../../../components/TruncatedAddress";
 import { usePoolFavorites } from "../../lib/hooks/usePoolFavorites";
 import { useTransactionToast } from '@/lib/hooks/useTransactionToast';
+import { stroopsToUnits, TOKEN_SYMBOL } from '@/app/lib/formatting';
 import DepthChart from '@/components/DepthChart';
 
 export default function PoolDetails({ params }: { params: Promise<{ id: string }> }) {
@@ -45,12 +46,6 @@ export default function PoolDetails({ params }: { params: Promise<{ id: string }
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [userBet, setUserBet] = useState<{ amountA: number; amountB: number } | null>(null);
-    
-    const snapshotRef = useRef<{ pool: Pool; userBet: { amountA: number; amountB: number } } | null>(null);
-    const pendingBetsRef = useRef(0);
-    const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const isRefreshingRef = useRef(false);
-    const rerunPendingRef = useRef(false);
     
     const snapshotRef = useRef<{ pool: Pool; userBet: { amountA: number; amountB: number } } | null>(null);
     const pendingBetsRef = useRef(0);
@@ -324,7 +319,7 @@ export default function PoolDetails({ params }: { params: Promise<{ id: string }
                         <div className="bg-muted/50 p-4 rounded-lg text-center">
                             <TrendingUp className="w-5 h-5 mx-auto mb-2 text-primary" />
                             <p className="text-sm text-muted-foreground">Total Volume</p>
-                            <p className="font-bold">{stroopsToUnits(totalVolume).toLocaleString()} {TOKEN_SYMBOL}</p>
+                            <p className="font-bold">{stroopsToUnits(BigInt(Math.round(totalVolume))).toLocaleString()} {TOKEN_SYMBOL}</p>
                         </div>
                         <div className="bg-muted/50 p-4 rounded-lg text-center">
                             <Users className="w-5 h-5 mx-auto mb-2 text-accent" />
@@ -387,16 +382,16 @@ export default function PoolDetails({ params }: { params: Promise<{ id: string }
                             <div className="grid grid-cols-2 gap-4">
                                 <div className={`p-3 rounded-lg ${userBet.amountA > 0 ? 'bg-green-500/10 border border-green-500/20' : 'bg-muted/50'}`}>
                                     <p className="text-sm text-muted-foreground">{pool.outcomeA}</p>
-                                    <p className="text-xl font-bold">{stroopsToUnits(userBet.amountA).toFixed(2)} {TOKEN_SYMBOL}</p>
+                                    <p className="text-xl font-bold">{stroopsToUnits(BigInt(Math.round(userBet.amountA))).toFixed(2)} {TOKEN_SYMBOL}</p>
                                 </div>
                                 <div className={`p-3 rounded-lg ${userBet.amountB > 0 ? 'bg-red-500/10 border border-red-500/20' : 'bg-muted/50'}`}>
                                     <p className="text-sm text-muted-foreground">{pool.outcomeB}</p>
-                                    <p className="text-xl font-bold">{stroopsToUnits(userBet.amountB).toFixed(2)} {TOKEN_SYMBOL}</p>
+                                    <p className="text-xl font-bold">{stroopsToUnits(BigInt(Math.round(userBet.amountB))).toFixed(2)} {TOKEN_SYMBOL}</p>
                                 </div>
                             </div>
                             <div className="mt-3 pt-3 border-t border-primary/20 flex justify-between items-center">
                                 <span className="text-sm text-muted-foreground">Total Staked</span>
-                                <span className="font-bold">{stroopsToUnits(userBet.amountA + userBet.amountB).toFixed(2)} {TOKEN_SYMBOL}</span>
+                                <span className="font-bold">{stroopsToUnits(BigInt(Math.round(userBet.amountA + userBet.amountB))).toFixed(2)} {TOKEN_SYMBOL}</span>
                             </div>
                             {pool.settled && userHasWinnings && (
                                 <div className="mt-2 text-sm text-green-400">

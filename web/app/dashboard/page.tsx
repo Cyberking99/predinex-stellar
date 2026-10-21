@@ -7,6 +7,7 @@ import { useUserActivity } from '../hooks/useUserActivity';
 import { useActiveBets } from '../lib/hooks/useActiveBets';
 import { useWallet } from '@/components/WalletAdapterProvider';
 import { useClaimWinnings } from '../lib/hooks/useClaimWinnings';
+import { calculatePortfolio } from '../lib/dashboard-utils';
 import RouteErrorBoundary from '../../components/RouteErrorBoundary';
 import { EmptyState } from '../../components/EmptyState';
 import { DisconnectedState } from '../../components/DisconnectedState';
@@ -62,7 +63,12 @@ function DashboardContent() {
     error: activityError,
     refresh: refreshActivity,
   } = useUserActivity(stxAddress ?? undefined, 5);
-  const { activeBets, isLoading: betsLoading, refresh: refreshBets } = useActiveBets(stxAddress);
+  const {
+    activeBets,
+    isLoading: betsLoading,
+    error: betsError,
+    refresh: refreshBets,
+  } = useActiveBets(stxAddress);
 
   if (!isConnected) {
     return <DisconnectedState />;
@@ -100,7 +106,31 @@ function DashboardContent() {
           )}
 
           <PlatformStats />
-          <PortfolioOverview portfolio={{ totalBets: 0, activeBets: 0, totalWagered: 0, totalWinnings: 0, totalClaimable: 0, profitLoss: 0, winRate: 0 }} />
+          {/* #1539 — these were hardcoded zeros, so the portfolio strip always
+              read "0 bets / 0 wagered / 0% win rate" no matter what the wallet
+              actually held. Derive it from the same activeBets the panel below
+              renders, and let PortfolioOverview show its own skeleton while the
+              bet list is still loading. */}
+          <PortfolioOverview
+            portfolio={calculatePortfolio(activeBets)}
+            isLoading={betsLoading}
+          />
+
+          {betsError && !betsLoading && (
+            <div
+              role="alert"
+              className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+            >
+              <span>Couldn&apos;t load your bets: {betsError}</span>
+              <button
+                type="button"
+                onClick={() => refreshBets()}
+                className="rounded-lg border border-destructive/40 px-3 py-1.5 font-medium hover:bg-destructive/20 transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <div className="p-4 sm:p-8 rounded-3xl border border-border bg-card/40 glass shadow-xl">
@@ -110,8 +140,24 @@ function DashboardContent() {
                 <div className="w-2 h-6 bg-primary rounded-full" />
                 Active Bets
               </h2>
+              {/* #1539 — while bets load, activeBets is empty, so the empty
+                  state flashed over the panel before data arrived. */}
               {activeBets.length === 0 ? (
-                <EmptyState message="No active bets yet" />
+                betsLoading ? (
+                  <div
+                    data-testid="active-bets-loading"
+                    role="status"
+                    aria-busy="true"
+                    className="space-y-3"
+                  >
+                    <span className="sr-only">Loading your bets…</span>
+                    {[0, 1, 2].map((i) => (
+                      <div key={i} className="h-16 rounded-xl bg-muted/40 animate-pulse" />
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState message="No active bets yet" />
+                )
               ) : (
                 <ActiveBetsCard
                   bets={activeBets}
@@ -136,7 +182,21 @@ function DashboardContent() {
             </div>
             <div className="p-4 sm:p-8 rounded-3xl border border-border bg-card/40 glass shadow-xl">
               {activities.length === 0 ? (
-                <EmptyState message="No activity yet" />
+                activityLoading ? (
+                  <div
+                    data-testid="activity-loading"
+                    role="status"
+                    aria-busy="true"
+                    className="space-y-3"
+                  >
+                    <span className="sr-only">Loading recent activity…</span>
+                    {[0, 1, 2].map((i) => (
+                      <div key={i} className="h-14 rounded-xl bg-muted/40 animate-pulse" />
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState message="No activity yet" />
+                )
               ) : (
                 <ActivityFeed
                   activities={activities}

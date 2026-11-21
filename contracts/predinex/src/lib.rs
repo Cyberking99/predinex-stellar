@@ -21,6 +21,7 @@ pub use budget_planner::{
     AllocationStrategy, BudgetPlan, BudgetPlanner, PortfolioMetrics, RiskTolerance,
 };
 mod concurrent_tests;
+mod contract_guards_tests;
 mod create_pool_validation_tests;
 mod creator_deadline_claim_tests;
 mod cross_chain_tests;
@@ -4459,6 +4460,18 @@ impl PredinexContract {
         if deadline <= env.ledger().timestamp() {
             return Err(ContractError::DeadlineInPast);
         }
+        // #1619 — Cap the market end timestamp relative to the creation
+        // ledger, not just relative to `created_at`. Scheduled pools use their
+        // future `open_at` as `created_at`, so without this the end timestamp
+        // could reach `now + schedule horizon + MAX_POOL_DURATION_SECS`.
+        let max_end = env
+            .ledger()
+            .timestamp()
+            .checked_add(MAX_POOL_DURATION_SECS)
+            .ok_or(ContractError::ExpiryOverflow)?;
+        if deadline > max_end {
+            return Err(ContractError::DurationTooLong);
+        }
 
         if twap_period_secs == 0 {
             return Err(ContractError::DurationTooShort);
@@ -5786,6 +5799,9 @@ impl PredinexContract {
             .persistent()
             .get::<_, Pool>(&DataKey::Pool(pool_id))
             .ok_or(ContractError::PoolNotFound)?;
+        // #1618 — Never hand out an oracle-derived price once its freshness
+        // window has expired. No-op while the staleness check is disabled.
+        Self::check_oracle_freshness(&env, pool_id)?;
         let totals = Self::read_outcome_totals(&env, pool_id, &pool);
         let current_odds = Self::current_odds_for_outcome(&totals, outcome)?;
         let effective_period = if period_secs == 0 {
@@ -6375,6 +6391,8 @@ impl PredinexContract {
         settler: Address,
     ) -> Result<(), ContractError> {
         creator.require_auth();
+        // #1620 — Admin flows that mutate market state are blocked while paused.
+        Self::require_not_paused(&env)?;
 
         let pool = env
             .storage()
@@ -6725,6 +6743,15 @@ impl PredinexContract {
         let truncated = total > MAX_BATCH_OPERATIONS;
         let cap = core::cmp::min(total, MAX_BATCH_OPERATIONS);
         for req in pools.iter().take(cap as usize) {
+            if seen_pool_ids.contains(req.pool_id) {
+                results.push_back(SettleResult {
+                    pool_id: req.pool_id,
+                    success: false,
+                    error_code: ContractError::DuplicateSettlementRequest as u32,
+                });
+                continue;
+            }
+            seen_pool_ids.push_back(req.pool_id);
             match Self::settle_single_pool(&env, &caller, req.pool_id, req.winning_outcome) {
                 Ok(()) => results.push_back(SettleResult {
                     pool_id: req.pool_id,
@@ -9009,6 +9036,8 @@ impl PredinexContract {
         pool_id: u32,
     ) -> Result<(), ContractError> {
         caller.require_auth();
+        // #1620 — Admin flows that mutate market state are blocked while paused.
+        Self::require_not_paused(&env)?;
         Self::require_treasury_recipient(&env, &caller)?;
 
         let mut pool = env
@@ -10068,7 +10097,9 @@ impl PredinexContract {
 
     /// #350 — Pause or unpause the contract. Only an authorized admin or treasury recipient may call this.
     /// While paused, sensitive operations (place_bet, settle_pool, settle_pools, settle_mirror_from_source,
-    /// claim_winnings, claim_refund, void_pool) are blocked. Treasury withdrawals and admin functions
+    /// claim_winnings, claim_refund, void_pool) are blocked. #1620 — Admin flows that mutate market
+    /// state (assign_settler, override_pool_cooling, distribute_lp_rewards, create_pool_mirror,
+    /// cancel_pool_mirror) are blocked too. Treasury withdrawals, config setters and key rotation
     /// remain operational.
     ///
     /// Emits `contract_paused` or `contract_unpaused` with `event_version()` in the
@@ -11045,6 +11076,10 @@ impl PredinexContract {
         if !token_allowed {
             return Err(ContractError::UnsupportedToken);
         }
+
+        // #1618 — Multi-asset bets must respect the same oracle freshness
+        // window as `place_bet`; otherwise they bypass the stale-price guard.
+        Self::check_oracle_freshness(&env, pool_id)?;
 
         // Fetch exchange rate.
         let rate_bps: i128 = env
@@ -12188,6 +12223,8 @@ impl PredinexContract {
         bridge_contract: Address,
     ) -> Result<u32, ContractError> {
         caller.require_auth();
+        // #1620 — Admin flows that mutate market state are blocked while paused.
+        Self::require_not_paused(&env)?;
         Self::require_treasury_recipient(&env, &caller)?;
         let pool = env
             .storage()
@@ -12269,6 +12306,8 @@ impl PredinexContract {
         source_pool_id: u32,
     ) -> Result<(), ContractError> {
         caller.require_auth();
+        // #1620 — Admin flows that mutate market state are blocked while paused.
+        Self::require_not_paused(&env)?;
         Self::require_treasury_recipient(&env, &caller)?;
         let mirror: PoolMirrorConfig = env
             .storage()
@@ -13069,6 +13108,8 @@ impl PredinexContract {
         amount: i128,
     ) -> Result<(), ContractError> {
         caller.require_auth();
+        // #1620 — Admin flows that mutate market state are blocked while paused.
+        Self::require_not_paused(&env)?;
         Self::require_treasury_recipient(&env, &caller)?;
         if amount <= 0 {
             return Err(ContractError::InvalidLpAmount);

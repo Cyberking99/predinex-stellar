@@ -35,6 +35,8 @@ Versions follow [Semantic Versioning](https://semver.org/).
 - Fixed a syntax error in `checkRpcHealth`'s return type that broke `tsc` and prevented `poller.test.ts` from loading
 
 ### 🌐 Web
+- Added `GET /api/version`: unauthenticated, secret-free build and contract metadata (commit, build time, contract ID and network, contract crate, event-schema and state versions). The preview deployment smoke test now fails if the deployment reports a different commit than the one just built (#1665)
+- The odds chart on the market and pool pages has a text alternative naming both outcomes and their current odds, and a polite live region that announces only changes of at least 1 percentage point, after the odds have been still for 1.5 s, so polling doesn't chatter (#1662)
 - Updated `getMarkets` and `fetchAllPools` to use the corrected pool count from `get_pool_count`
 - `/api/export/transactions` now requires the caller's wallet identity (`x-predinex-wallet-address`) and rejects exports for any other address, and it rate limits on the client IP (30/hour) in addition to the per-wallet bucket (10/hour) so walking a list of target addresses can no longer reset the counter (closes #1177)
 - Added `clientIpFromHeaders()` to the shared rate-limit helper for routes that need a caller identity they cannot vary per request
@@ -47,6 +49,8 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ### ⚙️ Ops & CI
 <!-- GitHub Actions workflows, scripts/, tooling, dependency updates -->
+- Failed on-chain market creation from `POST /api/markets` is now recorded with non-sensitive metadata (category, contract error code, correlation ID, request shape), logged as `market_creation_failed`, and raises one `market_creation_failure_alert` when failures repeat; admins can read the state at `GET /api/markets/admin/creation-failures`. Triage steps are in `docs/MARKET_CREATION_MONITORING.md` (#1664)
+- The migration rollback gate (`scripts/verify-migrations.sh`) now applies, rolls back and re-applies each migration on its own and names the one that fails. It fails on a missing, empty or orphaned `.down.sql` and on files marked `-- irreversible`, ignores the random `\restrict` key newer `pg_dump` releases add, and has its own tests in the CI job. `docs/MIGRATIONS.md` covers running it locally (#1663)
 - Added automated preview deployment workflow for pull requests (`.github/workflows/preview-deploy.yml`)
 - Preview deployments automatically post URLs to PR comments
 - Added PR template with preview deployment checklist

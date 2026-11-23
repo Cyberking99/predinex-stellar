@@ -25,6 +25,7 @@ Variables that are optional overall but required for a specific feature:
 | `NEXT_PUBLIC_SOROBAN_RPC_URL` | Custom RPC endpoint | Network default | Overrides the RPC URL selected for `NEXT_PUBLIC_NETWORK`. |
 | `WEBHOOK_SECRET` | Signed outbound webhooks | — | Server-only HMAC-SHA256 signing key. Never use a `NEXT_PUBLIC_` prefix. |
 | `NEXT_PUBLIC_VAPID_PUBLIC_KEY` with `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Web Push delivery | — | VAPID keypair and subject; the private key must stay server-side. |
+| `BUILD_COMMIT_SHA`, `BUILD_TIME` | `GET /api/version` build metadata | `VERCEL_GIT_COMMIT_SHA` / `GITHUB_SHA`, unset | Commit (7–40 hex) and ISO-8601 time of the build, captured at build time and checked by the preview smoke test (#1665). |
 
 The fixture switches (`NEXT_PUBLIC_ACTIVITY_FIXTURES`, `NEXT_PUBLIC_ENABLE_DISPUTE_MOCK_DATA`, `NEXT_PUBLIC_ENABLE_ORACLE_MANAGEMENT_PLACEHOLDER`) must remain `false` in production: they serve synthetic data and a healthy-looking but fake UI.
 
@@ -42,6 +43,7 @@ Copy `api/.env.example` to `api/.env`. See [`api/README.md`](../api/README.md) f
 | `PORT` | No | `3001` | HTTP listen port. |
 | `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`, `RATE_LIMIT_STRICT_MAX_REQUESTS` | No | `60000`, `100`, `20` | Rate-limit window and request budgets. Invalid values fall back to defaults. |
 | `OTEL_TRACING_ENABLED`, `OTEL_SERVICE_NAME` | No | `false`, `predinex-api` | Opt-in OTLP tracing; also set the standard `OTEL_EXPORTER_OTLP_ENDPOINT` when enabled. |
+| `MARKET_CREATION_FAILURE_ALERT_THRESHOLD`, `MARKET_CREATION_FAILURE_WINDOW_SECONDS` | No | `5`, `900` | Failed on-chain market creations within the window that trigger a `market_creation_failure_alert` log. See [MARKET_CREATION_MONITORING.md](./MARKET_CREATION_MONITORING.md). Invalid values fall back to defaults. |
 
 ---
 

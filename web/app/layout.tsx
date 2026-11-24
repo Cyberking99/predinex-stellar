@@ -10,6 +10,7 @@ import MarketListPreloader from "./components/MarketListPreloader";
 import ServiceWorkerRegistration from '@/components/ServiceWorkerRegistration';
 import PWAInstallPrompt from '@/components/PWAInstallPrompt';
 import PushNotificationPrompt from '@/components/PushNotificationPrompt';
+import RouteAnnouncer from '@/components/RouteAnnouncer';
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -85,6 +86,7 @@ export default function RootLayout({
                 >
                   Skip to main content
                 </a>
+                <RouteAnnouncer />
                 <ServiceWorkerRegistration />
                 <MarketListPreloader />
                 {/* #455 mobile: has-bottom-nav adds padding so content isn't hidden behind the fixed bottom nav */}
